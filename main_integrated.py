@@ -5,6 +5,7 @@ import argparse
 import os
 from core.detector import DetectorTrafego
 from core.fsm import ControladorSemaforoFSM, EstadoSemaforo
+from core.video_stream import ThreadedVideoStream
 
 def desenhar_painel_semaforo(frame, fsm):
     """
@@ -53,6 +54,8 @@ def main():
     parser = argparse.ArgumentParser(description="Semáforo Inteligente Distribuído")
     parser.add_argument("--source", default="transito.mp4", help="Fonte de vídeo: arquivo, webcam (0) ou RTSP/IP")
     parser.add_argument("--yolo", default="yolov8n.pt", help="Caminho do modelo YOLOv8")
+    parser.add_argument("--skip", type=int, default=3, help="Pulo de frames (padrão: 3)")
+    parser.add_argument("--imgsz", type=int, default=320, help="Resolução da inferência (padrão: 320)")
     args = parser.parse_args()
 
     fonte = args.source
@@ -63,12 +66,11 @@ def main():
         print(f"[AVISO] Arquivo {fonte} não encontrado. Tentando webcam padrão (0)...")
         fonte = 0
 
-    cap = cv2.VideoCapture(fonte)
-    if not cap.isOpened():
-        print(f"[ERRO] Não foi possível abrir a fonte de vídeo: {fonte}")
-        return
+    # Thread desacoplada de captura
+    stream = ThreadedVideoStream(src=fonte).start()
+    time.sleep(0.3)
 
-    detector = DetectorTrafego(model_path=args.yolo, confianca=0.35, pular_frames=2, imgsz=320)
+    detector = DetectorTrafego(model_path=args.yolo, confianca=0.35, pular_frames=args.skip, imgsz=args.imgsz)
     fsm = ControladorSemaforoFSM(
         min_verde_carro=6.0,
         max_verde_carro=25.0,
@@ -85,20 +87,17 @@ def main():
     animal_manual = False
     inicio_manual = 0
 
-    print("=== SEMÁFORO INTELIGENTE ATIVO ===")
+    print("=== SEMÁFORO INTELIGENTE ATIVO (OTIMIZADO) ===")
+    print(f"[CONFIG] Resolução: {args.imgsz}x{args.imgsz} | Salto: {args.skip} frames | I/O Thread: Ativa")
     print("Pressione P para simular pedestre na faixa")
     print("Pressione A para simular animal na via")
     print("Pressione Q para encerrar")
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            # Se for vídeo e acabou, reinicia o vídeo em loop para demonstração contínua
-            if isinstance(fonte, str) and os.path.exists(fonte):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                continue
-            else:
-                break
+        ret, frame = stream.read()
+        if not ret or frame is None:
+            time.sleep(0.01)
+            continue
 
         resultado = detector.processar_frame(frame, roi_normalizada=roi)
 
@@ -131,7 +130,7 @@ def main():
             inicio_manual = time.time()
             print("[INTERAÇÃO] Animal detectado na pista! Acionando freio e bloqueio de segurança...")
 
-    cap.release()
+    stream.stop()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
