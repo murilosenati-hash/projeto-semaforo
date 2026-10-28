@@ -28,6 +28,8 @@ class DetectorTrafego:
         self.imgsz = imgsz
         self.frame_count = 0
         self.ultimo_resultado = None
+        # Classes de interesse para filtrar direto no NMS do YOLO
+        self.classes_alvo = [CLASSE_PESSOA] + list(CLASSES_VEICULOS.keys()) + list(CLASSES_ANIMAIS.keys())
 
     @staticmethod
     def roi_para_pixels(roi, shape):
@@ -53,6 +55,7 @@ class DetectorTrafego:
                 tracker="bytetrack.yaml",
                 conf=self.confianca,
                 imgsz=self.imgsz,
+                classes=self.classes_alvo,
                 verbose=False
             )[0]
 
