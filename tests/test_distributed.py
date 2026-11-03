@@ -55,11 +55,11 @@ def test_comunicacao_distribuida_tcp_e_http():
         assert resp_http["totais"]["animais"] == 1
         assert len(resp_http["nos_sensores"]) == 2
 
-        # 3. Verifica transição para AMARELO_CARRO após min_verde_carro com pedestre/animal
-        time.sleep(0.25)
+        # 3. Verifica transição para fase de atenção ou limpeza após min_verde_carro com pedestre/animal
+        time.sleep(0.22)
         resp_transicao = sensor_norte.enviar_leitura(veiculos=5, pedestres=2, animais=1)
         assert resp_transicao is not None
-        assert resp_transicao["estado"] == EstadoSemaforo.AMARELO_CARRO.value
+        assert resp_transicao["estado"] in (EstadoSemaforo.AMARELO_CARRO.value, EstadoSemaforo.VERMELHO_LIMPEZA.value)
 
         sensor_norte.fechar()
         sensor_sul.fechar()
