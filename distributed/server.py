@@ -702,15 +702,18 @@ def criar_handler_http(controlador: ControladorDistribuido):
             self.end_headers()
             self.wfile.write(corpo)
 
+        def _enviar_html(self, status_code: int, html_str: str):
+            conteudo = html_str.encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(conteudo)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(conteudo)
+
         def do_GET(self):
             if self.path in ("/", "/display", "/index.html"):
-                conteudo = HTML_DISPLAY.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(conteudo)))
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(conteudo)
+                self._enviar_html(200, HTML_DISPLAY)
             elif self.path in ("/api/status", "/health"):
                 self._enviar_json(200, controlador.obter_status())
             else:
