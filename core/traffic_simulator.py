@@ -1,6 +1,7 @@
 import os
 import random
 import math
+from typing import Optional, List, Tuple, Dict
 from dataclasses import dataclass
 import numpy as np
 import cv2
@@ -170,15 +171,42 @@ class SimuladorTrafegoVirtual:
             sp = gerar_sprite_carro(120, 240, cor_bgr=(230, 80, 50), parado=False)
             cv2.imwrite(caminho_asset, sp)
 
+    def _carregar_asset_se_existir(self, nome_arquivo: str) -> Optional[np.ndarray]:
+        caminho = os.path.join(ASSETS_DIR, nome_arquivo)
+        if os.path.exists(caminho):
+            img = cv2.imread(caminho, cv2.IMREAD_UNCHANGED)
+            if img is not None and img.ndim == 3 and img.shape[2] == 4:
+                return img
+        return None
+
     def _obter_sprite(self, cor: tuple, parado: bool, tipo: str = "carro") -> np.ndarray:
         chave = (cor, parado, tipo)
         if chave not in self._sprite_cache:
-            if tipo == "caminhao":
-                self._sprite_cache[chave] = gerar_sprite_veiculo(130, 310, cor_bgr=cor, parado=parado, tipo="caminhao")
-            elif tipo == "moto":
-                self._sprite_cache[chave] = gerar_sprite_veiculo(50, 120, cor_bgr=cor, parado=parado, tipo="moto")
+            # Mapeia tipos para os novos assets PNG entregues em assets/
+            mapa_assets = {
+                "carro": ["car_sedan.png", "car_hatch.png", "car_sports.png", "taxi.png"],
+                "caminhao": ["truck.png", "bus.png", "truck_long.png"],
+                "moto": ["motorcycle.png"],
+                "van": ["van.png"],
+                "servico": ["police.png", "ambulance.png"]
+            }
+            
+            sprite_carregado = None
+            arquivos = mapa_assets.get(tipo, mapa_assets["carro"])
+            # Escolhe deterministicamente pelo hash da cor
+            arquivo_alvo = arquivos[abs(hash(cor)) % len(arquivos)]
+            sprite_carregado = self._carregar_asset_se_existir(arquivo_alvo)
+
+            if sprite_carregado is not None:
+                self._sprite_cache[chave] = sprite_carregado
             else:
-                self._sprite_cache[chave] = gerar_sprite_veiculo(120, 240, cor_bgr=cor, parado=parado, tipo="carro")
+                # Fallback procedural se o arquivo não existir
+                if tipo == "caminhao":
+                    self._sprite_cache[chave] = gerar_sprite_veiculo(130, 310, cor_bgr=cor, parado=parado, tipo="caminhao")
+                elif tipo == "moto":
+                    self._sprite_cache[chave] = gerar_sprite_veiculo(50, 120, cor_bgr=cor, parado=parado, tipo="moto")
+                else:
+                    self._sprite_cache[chave] = gerar_sprite_veiculo(120, 240, cor_bgr=cor, parado=parado, tipo="carro")
         return self._sprite_cache[chave]
 
     def spawn_veiculo(self, faixa: int = None, tipo: str = None) -> bool:
