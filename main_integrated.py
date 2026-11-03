@@ -25,7 +25,7 @@ def carregar_rois(caminho=None) -> dict:
     if caminho is None:
         caminho = CONFIG_ROI_PATH
     
-    rois = {
+    rois: dict = {
         "veiculos": [list(p) for p in ROI_PADRAO_VEICULOS],
         "pedestres": [list(p) for p in ROI_PADRAO_PEDESTRES]
     }
