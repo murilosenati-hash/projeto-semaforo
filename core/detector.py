@@ -20,6 +20,41 @@ CLASSES_ANIMAIS = {
     19: "Vaca"
 }
 
+
+class DebouncePedestre:
+    """
+    Controla o debounce de permanência para pedestres na zona de espera.
+    Exige tempo contínuo de permanência (padrão 1.5s) para acionar a FSM.
+    """
+    def __init__(self, tempo_confirmacao: float = 1.5):
+        self.tempo_confirmacao = float(tempo_confirmacao)
+        self.tempo_acumulado = 0.0
+        self.confirmado = False
+
+    def atualizar(self, pedestre_presente: bool, dt: float) -> tuple[bool, float, float]:
+        """
+        Atualiza o acumulador com o delta de tempo dt.
+        Retorna: (confirmado: bool, tempo_acumulado: float, progresso: float [0.0 a 1.0])
+        """
+        if dt < 0:
+            dt = 0.0
+        
+        if pedestre_presente:
+            self.tempo_acumulado += dt
+            if self.tempo_acumulado >= self.tempo_confirmacao:
+                self.confirmado = True
+        else:
+            self.tempo_acumulado = 0.0
+            self.confirmado = False
+
+        progresso = min(1.0, self.tempo_acumulado / self.tempo_confirmacao) if self.tempo_confirmacao > 0 else 1.0
+        return self.confirmado, self.tempo_acumulado, progresso
+
+    def resetar(self):
+        self.tempo_acumulado = 0.0
+        self.confirmado = False
+
+
 class DetectorTrafego:
     def __init__(self, model_path="yolov8n.pt", confianca=0.35, pular_frames=3, imgsz=320):
         self.model = YOLO(model_path)
@@ -38,12 +73,16 @@ class DetectorTrafego:
 
     @staticmethod
     def ponto_dentro_roi(ponto, poligono_roi):
-        return cv2.pointPolygonTest(poligono_roi, ponto, False) >= 0
+        return cv2.pointPolygonTest(poligono_roi, (float(ponto[0]), float(ponto[1])), False) >= 0
 
-    def processar_frame(self, frame, roi_normalizada=None):
+    def processar_frame(self, frame, roi_normalizada=None, roi_veiculos_normalizada=None, roi_pedestres_normalizada=None):
         """
         Processa um frame e retorna contagens de veículos, pessoas e animais,
-        além de desenhar os bounding boxes e ROI anotados.
+        além de desenhar os bounding boxes e ROIs anotadas.
+        
+        Filtragem Espacial Estrita:
+        - Veículos e Animais são testados pelo centroide contra a ROI de veículos.
+        - Pessoas são testadas pelo ponto inferior de contato com o solo ((x1+x2)//2, y2) contra a ROI de pedestres.
         """
         self.frame_count += 1
         deve_inferir = (self.frame_count % self.pular_frames == 0) or (self.ultimo_resultado is None)
@@ -60,9 +99,13 @@ class DetectorTrafego:
             )[0]
 
         result = self.ultimo_resultado
-        roi_poly = None
-        if roi_normalizada:
-            roi_poly = self.roi_para_pixels(roi_normalizada, frame.shape)
+
+        # Resolução de ROI de Veículos
+        roi_v_norm = roi_veiculos_normalizada if roi_veiculos_normalizada is not None else roi_normalizada
+        roi_poly_veic = self.roi_para_pixels(roi_v_norm, frame.shape) if roi_v_norm else None
+
+        # Resolução de ROI de Pedestres
+        roi_poly_ped = self.roi_para_pixels(roi_pedestres_normalizada, frame.shape) if roi_pedestres_normalizada else None
 
         contagem_veiculos = 0
         contagem_pessoas = 0
@@ -74,11 +117,23 @@ class DetectorTrafego:
                 cls_id = int(box.cls[0])
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 centro = ((x1 + x2) // 2, (y1 + y2) // 2)
+                ponto_pes = ((x1 + x2) // 2, y2)
 
-                # Filtra pela ROI se fornecida
-                dentro_roi = True
-                if roi_poly is not None:
-                    dentro_roi = self.ponto_dentro_roi(centro, roi_poly)
+                # Filtragem espacial por classe e ponto de contato
+                if cls_id == CLASSE_PESSOA:
+                    # Ponto de contato com o solo (pés)
+                    if roi_poly_ped is not None:
+                        dentro_roi = self.ponto_dentro_roi(ponto_pes, roi_poly_ped)
+                    elif roi_poly_veic is not None:
+                        dentro_roi = self.ponto_dentro_roi(ponto_pes, roi_poly_veic)
+                    else:
+                        dentro_roi = True
+                else:
+                    # Centroide para veículos e animais na pista
+                    if roi_poly_veic is not None:
+                        dentro_roi = self.ponto_dentro_roi(centro, roi_poly_veic)
+                    else:
+                        dentro_roi = True
 
                 if not dentro_roi:
                     continue
@@ -105,6 +160,7 @@ class DetectorTrafego:
                     "classe_id": cls_id,
                     "bbox": (x1, y1, x2, y2),
                     "centro": centro,
+                    "ponto_pes": ponto_pes,
                     "track_id": track_id
                 })
 
@@ -112,10 +168,20 @@ class DetectorTrafego:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), cor, 2)
                 rotulo = f"{tipo} #{track_id}" if track_id else tipo
                 cv2.putText(frame, rotulo, (x1, max(y1 - 8, 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, cor, 2)
-                cv2.circle(frame, centro, 3, cor, -1)
+                
+                # Marcador de ponto de contato com o solo para pedestres
+                if cls_id == CLASSE_PESSOA:
+                    cv2.circle(frame, ponto_pes, 5, (0, 255, 255), -1)
+                    cv2.putText(frame, "[PES]", (ponto_pes[0] - 14, ponto_pes[1] + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+                else:
+                    cv2.circle(frame, centro, 3, cor, -1)
 
-        if roi_poly is not None:
-            cv2.polylines(frame, [roi_poly], True, (0, 255, 255), 2)
+        # Renderização das duas ROIs se presentes
+        if roi_poly_veic is not None:
+            cv2.polylines(frame, [roi_poly_veic], True, (0, 215, 255), 2)
+        if roi_poly_ped is not None:
+            cor_borda_ped = (0, 255, 0) if contagem_pessoas > 0 else (255, 255, 0)
+            cv2.polylines(frame, [roi_poly_ped], True, cor_borda_ped, 2)
 
         return {
             "veiculos": contagem_veiculos,

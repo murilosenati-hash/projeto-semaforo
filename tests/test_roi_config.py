@@ -1,17 +1,22 @@
 import os
 import sys
 import tempfile
+import json
 import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from main_integrated import (
+    carregar_rois,
     carregar_roi,
+    salvar_rois,
     salvar_roi,
     validar_poligono,
     validar_poligono_4_pontos,
     normalizar_pontos_roi,
+    ROI_PADRAO_VEICULOS,
+    ROI_PADRAO_PEDESTRES,
     ROI_PADRAO
 )
 from core.detector import DetectorTrafego
@@ -20,7 +25,7 @@ from core.detector import DetectorTrafego
 def test_roi_carregar_padrao_fallback():
     """
     Garante que se o arquivo não existir ou estiver corrompido,
-    carregar_roi() faz fallback gracioso para ROI_PADRAO.
+    carregar_roi() faz fallback gracioso para ROI_PADRAO_VEICULOS.
     """
     caminho_inexistente = os.path.join(tempfile.gettempdir(), "roi_inexistente_fallback_test.json")
     if os.path.exists(caminho_inexistente):
@@ -28,30 +33,66 @@ def test_roi_carregar_padrao_fallback():
 
     roi = carregar_roi(caminho=caminho_inexistente)
     assert len(roi) == 4
-    assert roi == [list(p) for p in ROI_PADRAO]
+    assert roi == [list(p) for p in ROI_PADRAO_VEICULOS]
 
 
-def test_roi_salvar_e_carregar_persistencia():
+def test_dual_roi_salvar_e_carregar_persistencia():
     """
-    Testa ciclo completo de persistência (salvar_roi e carregar_roi)
-    em arquivo JSON dedicado com coordenadas normalizadas.
+    Testa ciclo completo de persistência dual-ROI (veículos e pedestres)
+    com formato estruturado em dicionário.
     """
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
         caminho_tmp = tf.name
 
     try:
-        roi_customizada = [
-            [0.1234, 0.2345],
-            [0.8765, 0.2345],
-            [0.8765, 0.9876],
-            [0.1234, 0.9876]
-        ]
-        sucesso = salvar_roi(roi_customizada, caminho=caminho_tmp)
+        rois_dict = {
+            "veiculos": [
+                [0.10, 0.20],
+                [0.90, 0.20],
+                [0.90, 0.90],
+                [0.10, 0.90]
+            ],
+            "pedestres": [
+                [0.05, 0.60],
+                [0.25, 0.60],
+                [0.25, 0.95],
+                [0.05, 0.95]
+            ]
+        }
+        sucesso = salvar_rois(rois_dict, caminho=caminho_tmp)
         assert sucesso is True
         assert os.path.exists(caminho_tmp)
 
-        roi_lida = carregar_roi(caminho=caminho_tmp)
-        assert roi_lida == roi_customizada
+        rois_lidas = carregar_rois(caminho=caminho_tmp)
+        assert rois_lidas["veiculos"] == rois_dict["veiculos"]
+        assert rois_lidas["pedestres"] == rois_dict["pedestres"]
+
+        # Teste de atualização individual via salvar_roi(tipo='pedestres')
+        nova_ped = [[0.02, 0.40], [0.18, 0.40], [0.18, 0.85], [0.02, 0.85]]
+        salvar_roi(nova_ped, caminho=caminho_tmp, tipo="pedestres")
+        rois_atualizadas = carregar_rois(caminho=caminho_tmp)
+        assert rois_atualizadas["pedestres"] == nova_ped
+        assert rois_atualizadas["veiculos"] == rois_dict["veiculos"]
+    finally:
+        if os.path.exists(caminho_tmp):
+            os.remove(caminho_tmp)
+
+
+def test_dual_roi_retrocompatibilidade_arquivo_legado():
+    """
+    Garante que se o arquivo JSON contiver apenas uma lista de pontos (formato legado),
+    carregar_rois() carrega veículos da lista e mantém pedestres com fallback padrão.
+    """
+    with tempfile.NamedTemporaryFile(mode='w', suffix=".json", delete=False) as tf:
+        caminho_tmp = tf.name
+        lista_legada = [[0.1, 0.1], [0.8, 0.1], [0.8, 0.8], [0.1, 0.8]]
+        json.dump(lista_legada, tf)
+
+    try:
+        rois = carregar_rois(caminho=caminho_tmp)
+        assert rois["veiculos"] == lista_legada
+        assert rois["pedestres"] == [list(p) for p in ROI_PADRAO_PEDESTRES]
+        assert carregar_roi(caminho=caminho_tmp) == lista_legada
     finally:
         if os.path.exists(caminho_tmp):
             os.remove(caminho_tmp)
@@ -99,22 +140,18 @@ def test_validar_poligono_n_vertices_livre():
     Testa o suporte a polígonos livres com N vértices (N >= 3, ex: N=3, N=5, N=6)
     com threshold de área >= 500 px.
     """
-    # Triângulo válido (N = 3, área > 500)
     triangulo = [[200, 100], [600, 100], [400, 500]]
     valido, msg = validar_poligono(triangulo)
     assert valido is True
 
-    # Pentágono convexo (N = 5, área > 500)
     pentagono = [[300, 100], [500, 150], [550, 400], [250, 450], [150, 300]]
     valido, msg = validar_poligono(pentagono)
     assert valido is True
 
-    # Hexágono convexo (N = 6)
     hexagono = [[300, 100], [500, 100], [600, 300], [500, 500], [300, 500], [200, 300]]
     valido, msg = validar_poligono(hexagono)
     assert valido is True
 
-    # Rejeição de triângulo com área minúscula (< 500 px)
     tri_pequeno = [[100, 100], [120, 100], [110, 110]]
     valido, msg = validar_poligono(tri_pequeno)
     assert valido is False
@@ -162,13 +199,11 @@ def test_roi_compatibilidade_detector_pixels():
     assert roi_px[2].tolist() == [1024, 648]
     assert roi_px[3].tolist() == [256, 648]
 
-    # Teste de ponto dentro da ROI
     ponto_dentro = (640, 400)
     ponto_fora = (100, 100)
     assert DetectorTrafego.ponto_dentro_roi(ponto_dentro, roi_px) is True
     assert DetectorTrafego.ponto_dentro_roi(ponto_fora, roi_px) is False
 
-    # Teste com N vértices (Pentágono)
     pent_norm = [[0.3, 0.1], [0.7, 0.1], [0.9, 0.5], [0.7, 0.9], [0.3, 0.9]]
     pent_px = DetectorTrafego.roi_para_pixels(pent_norm, shape_frame)
     assert len(pent_px) == 5

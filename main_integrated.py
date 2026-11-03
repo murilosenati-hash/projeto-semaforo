@@ -4,47 +4,75 @@ import time
 import argparse
 import os
 import json
-from core.detector import DetectorTrafego
+from core.detector import DetectorTrafego, DebouncePedestre
 from core.fsm import ControladorSemaforoFSM, EstadoSemaforo
 from core.video_stream import ThreadedVideoStream
 from core.traffic_simulator import SimuladorTrafegoVirtual
 
 CONFIG_ROI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config_roi.json')
-ROI_PADRAO = [(0.15, 0.30), (0.85, 0.30), (0.98, 0.98), (0.02, 0.98)]
+ROI_PADRAO_VEICULOS = [(0.15, 0.30), (0.85, 0.30), (0.98, 0.98), (0.02, 0.98)]
+ROI_PADRAO_PEDESTRES = [(0.02, 0.50), (0.22, 0.50), (0.22, 0.95), (0.02, 0.95)]
+ROI_PADRAO = ROI_PADRAO_VEICULOS
 
 
-def carregar_roi(caminho=None):
+def carregar_rois(caminho=None) -> dict:
     """
-    Carrega a ROI configurada do arquivo JSON. Se inexistente ou corrompido,
-    retorna uma cópia da ROI_PADRAO.
+    Carrega as ROIs poligonais independentes de veículos e pedestres do arquivo JSON.
+    Garante retrocompatibilidade total: se o arquivo contiver apenas uma lista,
+    trata como ROI de veículos e preenche pedestres com o layout padrão.
     """
     if caminho is None:
         caminho = CONFIG_ROI_PATH
+    
+    rois = {
+        "veiculos": [list(p) for p in ROI_PADRAO_VEICULOS],
+        "pedestres": [list(p) for p in ROI_PADRAO_PEDESTRES]
+    }
+    
     try:
         if os.path.exists(caminho):
             with open(caminho, 'r', encoding='utf-8') as f:
                 dados = json.load(f)
-                if isinstance(dados, list) and len(dados) == 4:
-                    return [[float(p[0]), float(p[1])] for p in dados]
+                if isinstance(dados, dict):
+                    if "veiculos" in dados and isinstance(dados["veiculos"], list):
+                        rois["veiculos"] = [[float(p[0]), float(p[1])] for p in dados["veiculos"]]
+                    if "pedestres" in dados and isinstance(dados["pedestres"], list):
+                        rois["pedestres"] = [[float(p[0]), float(p[1])] for p in dados["pedestres"]]
+                elif isinstance(dados, list):
+                    # Formato legado (apenas lista de veículos)
+                    rois["veiculos"] = [[float(p[0]), float(p[1])] for p in dados]
     except Exception as e:
-        print(f"[AVISO] Erro ao carregar ROI de {caminho}: {e}. Usando ROI padrão.")
-    return [list(p) for p in ROI_PADRAO]
+        print(f"[AVISO] Erro ao carregar ROIs de {caminho}: {e}. Usando ROIs padrão.")
+        
+    return rois
 
 
-def salvar_roi(roi, caminho=None):
-    """
-    Salva a ROI configurada em arquivo JSON seguro.
-    """
+def carregar_roi(caminho=None):
+    """Alias retrocompatível: retorna a lista de coordenadas da ROI de veículos."""
+    return carregar_rois(caminho=caminho)["veiculos"]
+
+
+def salvar_rois(rois: dict, caminho=None) -> bool:
+    """Salva o dicionário completo com as ROIs de veículos e pedestres em arquivo JSON."""
     if caminho is None:
         caminho = CONFIG_ROI_PATH
     try:
         with open(caminho, 'w', encoding='utf-8') as f:
-            json.dump(roi, f, indent=2)
-        print(f"[CONFIG] ROI salva com sucesso em {caminho}")
+            json.dump(rois, f, indent=2)
+        print(f"[CONFIG] ROIs salvas com sucesso em {caminho}")
         return True
     except Exception as e:
-        print(f"[ERRO] Falha ao salvar ROI em {caminho}: {e}")
+        print(f"[ERRO] Falha ao salvar ROIs em {caminho}: {e}")
         return False
+
+
+def salvar_roi(roi, caminho=None, tipo="veiculos") -> bool:
+    """Atualiza e salva uma ROI específica ('veiculos' ou 'pedestres')."""
+    if caminho is None:
+        caminho = CONFIG_ROI_PATH
+    rois = carregar_rois(caminho=caminho)
+    rois[tipo] = roi
+    return salvar_rois(rois, caminho=caminho)
 
 
 def validar_poligono(pts):
@@ -88,10 +116,11 @@ def normalizar_pontos_roi(pts, fw, fh):
     ]
 
 
-def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None):
+def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None, tipo="veiculos"):
     """
     Seletor interativo de polígono livre de N vértices (N >= 3) para calibração de ROI.
     ENTER ou ESPAÇO finaliza e valida a geometria (área >= 500 px e convexidade).
+    Permite calibrar tanto 'veiculos' quanto 'pedestres' com identidades visuais distintas.
     """
     fh, fw = frame_base.shape[:2]
     cv2.namedWindow(nome_janela, cv2.WINDOW_NORMAL)
@@ -99,9 +128,18 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None):
     altura_janela = int(largura_janela * (fh / fw)) if fw > 0 else 576
     cv2.resizeWindow(nome_janela, largura_janela, altura_janela)
 
+    if tipo == "pedestres":
+        titulo_base = "CALIBRANDO ZONA DE PEDESTRES (ESPERA/FAIXA)"
+        cor_tema = (255, 255, 0)      # Ciano
+        cor_preenchimento = (255, 200, 0)
+    else:
+        titulo_base = "CALIBRANDO PISTA DE VEICULOS (ROI PRINCIPAL)"
+        cor_tema = (0, 215, 255)      # Amarelo/Laranja
+        cor_preenchimento = (0, 220, 100)
+
     pontos_clicados = []
     msg_status = ""
-    status_cor = (0, 255, 255)
+    status_cor = cor_tema
 
     def mouse_callback(event, x, y, flags, param):
         nonlocal msg_status, status_cor
@@ -125,27 +163,27 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None):
             # Texto do Banner OSD
             n_pts = len(pontos_clicados)
             if n_pts < 3:
-                texto_banner = f"MODO CALIBRACAO ROI (LIVRE) | Vértices: {n_pts} (min 3) | [C] Limpar | [ESC] Cancelar"
-                cor_banner = (0, 255, 255)
+                texto_banner = f"{titulo_base} | Vértices: {n_pts} (min 3) | [C] Limpar | [ESC] Cancelar"
+                cor_banner = cor_tema
             else:
-                texto_banner = msg_status if msg_status else f"Polígono com {n_pts} vértices | [ENTER/ESPACO] Salvar | [C] Limpar"
+                texto_banner = msg_status if msg_status else f"{titulo_base} | {n_pts} vértices | [ENTER/ESPACO] Salvar | [C] Limpar"
                 cor_banner = status_cor
 
-            cv2.putText(frame_vis, texto_banner, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.60, cor_banner, 2)
+            cv2.putText(frame_vis, texto_banner, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.58, cor_banner, 2)
 
             # Desenho dos vértices e arestas
             if n_pts > 0:
                 for idx, pt in enumerate(pontos_clicados):
                     # Círculo com borda contrastante
                     cv2.circle(frame_vis, tuple(pt), 7, (0, 0, 0), -1)
-                    cv2.circle(frame_vis, tuple(pt), 5, (0, 255, 255), -1)
-                    cv2.putText(frame_vis, f"P{idx + 1}", (pt[0] + 10, pt[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+                    cv2.circle(frame_vis, tuple(pt), 5, cor_tema, -1)
+                    cv2.putText(frame_vis, f"P{idx + 1}", (pt[0] + 10, pt[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, cor_tema, 2)
 
                 # Conecta pontos consecutivos
                 for idx in range(n_pts - 1):
-                    cv2.line(frame_vis, tuple(pontos_clicados[idx]), tuple(pontos_clicados[idx + 1]), (0, 255, 255), 2)
+                    cv2.line(frame_vis, tuple(pontos_clicados[idx]), tuple(pontos_clicados[idx + 1]), cor_tema, 2)
 
-                # Se tiver no mínimo 3 pontos, traça fechamento e aplica preenchimento semitransparente
+                # Se tiver no mínimo 3 pontos, fecha o polígono e aplica preenchimento semitransparente
                 if n_pts >= 3:
                     valido, _ = validar_poligono(pontos_clicados)
                     cor_linha = (0, 255, 0) if valido else (0, 0, 255)
@@ -154,7 +192,7 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None):
                     if valido:
                         overlay_poly = frame_vis.copy()
                         poly_pts = np.array([pontos_clicados], dtype=np.int32)
-                        cv2.fillPoly(overlay_poly, poly_pts, (0, 220, 100))
+                        cv2.fillPoly(overlay_poly, poly_pts, cor_preenchimento)
                         cv2.addWeighted(overlay_poly, 0.30, frame_vis, 0.70, 0, frame_vis)
 
             cv2.imshow(nome_janela, frame_vis)
@@ -162,15 +200,15 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None):
 
             # Tecla ESC (27): aborta e mantém ROI anterior
             if key == 27:
-                print("[ROI] Calibração cancelada pelo usuário (ESC).")
+                print(f"[ROI] Calibração de '{tipo}' cancelada pelo usuário (ESC).")
                 return None
             
             # Tecla 'C' / 'c': limpa pontos para reclicar
             elif key == ord('c') or key == ord('C'):
                 pontos_clicados.clear()
                 msg_status = ""
-                status_cor = (0, 255, 255)
-                print("[ROI] Pontos reiniciados. Clique nos novos vértices.")
+                status_cor = cor_tema
+                print(f"[ROI] Pontos de '{tipo}' reiniciados. Clique nos novos vértices.")
 
             # SPACE (32) ou ENTER (13): confirma se >= 3 pontos válidos
             elif key in (13, 32):
@@ -178,16 +216,15 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None):
                     valido, motivo = validar_poligono(pontos_clicados)
                     if valido:
                         roi_norm = normalizar_pontos_roi(pontos_clicados, fw, fh)
-                        print(f"[ROI] Calibração concluída com sucesso! Vértices: {roi_norm}")
+                        print(f"[ROI] Calibração de '{tipo}' concluída com sucesso! Vértices: {roi_norm}")
                         return roi_norm
                     else:
                         msg_status = f"[INVALIDO] {motivo} | [C] Limpar"
                         status_cor = (0, 0, 255)
                 else:
                     msg_status = f"Selecione no mínimo 3 pontos antes de salvar ({len(pontos_clicados)} marcados)"
-                    status_cor = (0, 255, 255)
+                    status_cor = (0, 0, 255)
     finally:
-        # Deregistração obrigatória do callback de mouse
         cv2.setMouseCallback(nome_janela, lambda *args: None)
 
 
@@ -195,9 +232,10 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None):
 selecionar_poligono_4_pontos = selecionar_poligono_livre
 
 
-def desenhar_painel_semaforo(frame, fsm, ar_ativo=False):
+def desenhar_painel_semaforo(frame, fsm, ar_ativo=False, debounce_info=None):
     """
-    Desenha um semáforo virtual digital no canto do frame com luzes realistas.
+    Desenha um semáforo virtual digital no canto do frame com luzes realistas
+    e telemetria da FSM com feedback de debounce de pedestres.
     """
     h, w = frame.shape[:2]
     luz_carro_r, luz_carro_y, luz_carro_g, luz_ped_r, luz_ped_g = fsm.obter_luzes()
@@ -229,14 +267,26 @@ def desenhar_painel_semaforo(frame, fsm, ar_ativo=False):
 
     # HUD Superior com Estado e Telemetria
     tempo_no_estado = time.time() - fsm.inicio_estado
-    cv2.rectangle(frame, (20, 20), (490, 140), (0, 0, 0), -1)
-    cv2.rectangle(frame, (20, 20), (490, 140), (0, 255, 255), 2)
+    cv2.rectangle(frame, (20, 20), (520, 170), (0, 0, 0), -1)
+    cv2.rectangle(frame, (20, 20), (520, 170), (0, 255, 255), 2)
 
     tag_ar = " [AR ATIVO]" if ar_ativo else ""
-    cv2.putText(frame, f"ESTADO: {fsm.estado_atual.value}{tag_ar}", (35, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-    cv2.putText(frame, f"TEMPO NO ESTADO: {tempo_no_estado:.1f}s / Meta: {fsm.tempo_verde_calculado:.0f}s", (35, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    cv2.putText(frame, f"SENSORES: {fsm.veiculos_detectados} Veic | {fsm.pedestres_detectados} Ped | {fsm.animais_detectados} Animal", (35, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    cv2.putText(frame, "TECLAS: [P] Ped | [A] Anim | [R] ROI | [V] AR | [C] Spawn | [X] Clean", (35, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (200, 200, 200), 1)
+    cv2.putText(frame, f"ESTADO: {fsm.estado_atual.value}{tag_ar}", (35, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+    cv2.putText(frame, f"TEMPO NO ESTADO: {tempo_no_estado:.1f}s / Meta: {fsm.tempo_verde_calculado:.0f}s", (35, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1)
+    cv2.putText(frame, f"SENSORES: {fsm.veiculos_detectados} Veic | {fsm.pedestres_detectados} Ped | {fsm.animais_detectados} Animal", (35, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 1)
+    cv2.putText(frame, "TECLAS: [P] Ped | [A] Anim | [R] ROI Pista | [E] ROI Pedestres | [V] AR", (35, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
+
+    # Linha de Feedback de Debounce de Pedestre
+    if debounce_info is not None:
+        confirmado, t_acumulado, progresso = debounce_info
+        if confirmado:
+            cv2.putText(frame, "[PEDESTRE CONFIRMADO] -> FSM ACIONADA", (35, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 0), 2)
+        elif t_acumulado > 0.0:
+            num_barras = int(progresso * 8)
+            barra_txt = "[" + "|" * num_barras + " " * (8 - num_barras) + "]"
+            cv2.putText(frame, f"PEDESTRE AGUARDANDO: {barra_txt} {t_acumulado:.1f}s / 1.5s", (35, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 2)
+        else:
+            cv2.putText(frame, "ZONA PEDESTRES: Livre (Aguardando na calçada)", (35, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 160, 160), 1)
 
 
 def main():
@@ -286,8 +336,9 @@ def main():
     )
     ar_ativo = args.simular_carros
 
-    # Carrega ROI persistida ou fallback padrão
-    roi = carregar_roi()
+    # Carrega ROIs persistidas (Veículos e Pedestres)
+    rois = carregar_rois()
+    debounce_pedestre = DebouncePedestre(tempo_confirmacao=1.5)
 
     pedestre_manual = False
     animal_manual = False
@@ -295,12 +346,13 @@ def main():
     tempo_anterior = time.time()
     janela_configurada = False
 
-    print("=== SEMÁFORO INTELIGENTE ATIVO (OTIMIZADO) ===")
+    print("=== SEMÁFORO INTELIGENTE ATIVO (DUAL-ROI & DEBOUNCE EGM) ===")
     print(f"[CONFIG] Resolução: {args.imgsz}x{args.imgsz} | Salto: {args.skip} frames | I/O Thread: Ativa")
     print(f"[CONFIG] Simulação AR: {'ATIVADA' if ar_ativo else 'DESATIVADA'} | Tecla 'V' para alternar")
     print("Pressione P para simular pedestre na faixa")
     print("Pressione A para simular animal na via")
-    print("Pressione R para calibrar a Região de Interesse (ROI) poligonal livre (N vértices)")
+    print("Pressione R para calibrar a ROI de VEÍCULOS (pista poligonal livre)")
+    print("Pressione E para calibrar a ROI de PEDESTRES (zona de espera/calçada)")
     print("Pressione V para alternar Simulação AR de Carros")
     print("Pressione C para Spawn Imediato de Carro AR")
     print("Pressione X para Limpar Carros AR da Pista")
@@ -323,15 +375,23 @@ def main():
             cv2.resizeWindow(nome_janela, largura_janela, altura_janela)
             janela_configurada = True
 
-        # 1. Inferência YOLO para detectar pedestres/animais reais na cena física
-        resultado = detector.processar_frame(frame, roi_normalizada=roi)
+        # 1. Inferência YOLO com filtragem espacial dual (Centroide pista vs Pés calçada)
+        resultado = detector.processar_frame(
+            frame,
+            roi_veiculos_normalizada=rois["veiculos"],
+            roi_pedestres_normalizada=rois["pedestres"]
+        )
 
-        # Se foi acionado manualmente via teclado, mantém por 8s
+        # Debounce temporal de permanência (1.5 segundos)
+        pedestre_zona = (resultado["pedestres"] > 0)
+        ped_confirmado, t_acumulado, progresso_aguard = debounce_pedestre.atualizar(pedestre_zona, dt)
+
+        # Botão manual (P / A)
         if (pedestre_manual or animal_manual) and (time.time() - inicio_manual > 8.0):
             pedestre_manual = False
             animal_manual = False
 
-        pedestres = resultado["pedestres"] or (1 if pedestre_manual else 0)
+        pedestres_fsm = 1 if (pedestre_manual or ped_confirmado) else 0
         animais = resultado["animais"] or (1 if animal_manual else 0)
 
         # 2. Fusão Sensorial Híbrida: Carros Virtuais AR vs YOLO real
@@ -341,17 +401,45 @@ def main():
         else:
             veiculos = resultado["veiculos"]
 
-        fsm.atualizar_sensores(veiculos=veiculos, pedestres=pedestres, animais=animais)
+        fsm.atualizar_sensores(veiculos=veiculos, pedestres=pedestres_fsm, animais=animais)
         fsm.tick()
 
         frame_anotado = resultado["frame_anotado"]
 
-        # 3. Renderização em camadas: frame -> carros AR e Stop Line -> HUD Semáforo
-        if ar_ativo:
-            roi_px = DetectorTrafego.roi_para_pixels(roi, frame.shape)
-            simulador_ar.renderizar(frame_anotado, roi_px, fsm.estado_atual)
+        # 3. Renderização em camadas:
+        # 3.1 Pista e Carros AR
+        roi_px_veic = DetectorTrafego.roi_para_pixels(rois["veiculos"], frame.shape)
+        if len(roi_px_veic) >= 3:
+            cv2.polylines(frame_anotado, [roi_px_veic], True, (0, 215, 255), 2)
+            p_topo_v = roi_px_veic[0]
+            cv2.putText(frame_anotado, "[PISTA VEICULOS]", (p_topo_v[0] + 5, max(20, p_topo_v[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 215, 255), 1, cv2.LINE_AA)
 
-        desenhar_painel_semaforo(frame_anotado, fsm, ar_ativo=ar_ativo)
+        if ar_ativo:
+            simulador_ar.renderizar(frame_anotado, roi_px_veic, fsm.estado_atual)
+
+        # 3.2 Zona de Espera de Pedestres (Ciano quando livre, Verde vivo se detectado/confirmado)
+        roi_px_ped = DetectorTrafego.roi_para_pixels(rois["pedestres"], frame.shape)
+        if len(roi_px_ped) >= 3:
+            cor_ped = (0, 255, 0) if (ped_confirmado or pedestre_zona) else (255, 255, 0)
+            overlay_ped = frame_anotado.copy()
+            cv2.fillPoly(overlay_ped, [roi_px_ped], cor_ped)
+            alfa_ped = 0.40 if (ped_confirmado or pedestre_zona) else 0.20
+            cv2.addWeighted(overlay_ped, alfa_ped, frame_anotado, 1.0 - alfa_ped, 0, frame_anotado)
+            cv2.polylines(frame_anotado, [roi_px_ped], True, cor_ped, 2)
+            
+            p_topo_p = roi_px_ped[0]
+            label_ped = "[PEDESTRE CONFIRMADO]" if ped_confirmado else ("[AGUARDANDO FAIXA]" if pedestre_zona else "[ZONA PEDESTRES]")
+            cv2.putText(frame_anotado, label_ped, (p_topo_p[0] + 5, max(20, p_topo_p[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, cor_ped, 1, cv2.LINE_AA)
+
+        # 3.3 HUD Semáforo com Debounce Info
+        desenhar_painel_semaforo(
+            frame_anotado,
+            fsm,
+            ar_ativo=ar_ativo,
+            debounce_info=(ped_confirmado, t_acumulado, progresso_aguard)
+        )
 
         cv2.imshow(nome_janela, frame_anotado)
 
@@ -381,12 +469,21 @@ def main():
         elif key == ord('r') or key == ord('R'):
             frame_congelado = frame.copy()
             t0 = time.time()
-            nova_roi = selecionar_poligono_livre(nome_janela, frame_congelado, roi_atual=roi)
+            nova_roi_v = selecionar_poligono_livre(nome_janela, frame_congelado, roi_atual=rois["veiculos"], tipo="veiculos")
             fsm.inicio_estado += (time.time() - t0)
             tempo_anterior = time.time()
-            if nova_roi is not None:
-                roi = nova_roi
-                salvar_roi(roi)
+            if nova_roi_v is not None:
+                rois["veiculos"] = nova_roi_v
+                salvar_rois(rois)
+        elif key == ord('e') or key == ord('E'):
+            frame_congelado = frame.copy()
+            t0 = time.time()
+            nova_roi_p = selecionar_poligono_livre(nome_janela, frame_congelado, roi_atual=rois["pedestres"], tipo="pedestres")
+            fsm.inicio_estado += (time.time() - t0)
+            tempo_anterior = time.time()
+            if nova_roi_p is not None:
+                rois["pedestres"] = nova_roi_p
+                salvar_rois(rois)
 
     stream.stop()
     cv2.destroyAllWindows()
