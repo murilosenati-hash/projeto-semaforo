@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from main_integrated import (
     carregar_roi,
     salvar_roi,
+    validar_poligono,
     validar_poligono_4_pontos,
     normalizar_pontos_roi,
     ROI_PADRAO
@@ -58,11 +59,11 @@ def test_roi_salvar_e_carregar_persistencia():
 
 def test_validar_poligono_4_pontos_geometria():
     """
-    Testa regras geométricas dos 4 Goldfish:
+    Testa regras geométricas com threshold atualizado de 500px:
     1. Polígono válido convexo (trapezoidal / perspectiva)
-    2. Polígono degenerado com área menor que 1000px
+    2. Polígono degenerado com área menor que 500px
     3. Polígono auto-intersectado (formato de 8 / cruzado / não-convexo)
-    4. Quantidade incorreta de vértices
+    4. Quantidade incorreta de vértices (< 3)
     """
     # 1. Trapézio convexo típico de pista (válido)
     trapezio_valido = [[200, 150], [600, 150], [750, 450], [50, 450]]
@@ -70,7 +71,7 @@ def test_validar_poligono_4_pontos_geometria():
     assert valido is True
     assert msg == "OK"
 
-    # 2. Área degenerada (< 1000 px, ex: quadrado convexo de 5x5 = 25px)
+    # 2. Área degenerada (< 500 px, ex: quadrado convexo de 5x5 = 25px)
     pontos_pequenos = [[100, 100], [105, 100], [105, 105], [100, 105]]
     valido, msg = validar_poligono_4_pontos(pontos_pequenos)
     assert valido is False
@@ -82,16 +83,42 @@ def test_validar_poligono_4_pontos_geometria():
     assert valido is False
     assert "insuficiente" in msg.lower() or "não-convexo" in msg.lower() or "auto-intersectado" in msg.lower()
 
-    # 3. Cruzamento em formato de 8 (ampulheta / auto-interseção simétrica ou assimétrica)
-    # P1(100,100), P2(400,400), P3(400,100), P4(100,400)
+    # 3. Cruzamento em formato de 8 (ampulheta / auto-interseção)
     pontos_cruzados = [[100, 100], [400, 400], [400, 100], [100, 400]]
     valido, msg = validar_poligono_4_pontos(pontos_cruzados)
     assert valido is False
     assert "não-convexo" in msg.lower() or "auto-intersectado" in msg.lower()
 
-    # 4. Quantidade incorreta de pontos
+    # 4. Quantidade incorreta de pontos (< 3)
     valido, msg = validar_poligono_4_pontos([[10, 10], [20, 20]])
     assert valido is False
+
+
+def test_validar_poligono_n_vertices_livre():
+    """
+    Testa o suporte a polígonos livres com N vértices (N >= 3, ex: N=3, N=5, N=6)
+    com threshold de área >= 500 px.
+    """
+    # Triângulo válido (N = 3, área > 500)
+    triangulo = [[200, 100], [600, 100], [400, 500]]
+    valido, msg = validar_poligono(triangulo)
+    assert valido is True
+
+    # Pentágono convexo (N = 5, área > 500)
+    pentagono = [[300, 100], [500, 150], [550, 400], [250, 450], [150, 300]]
+    valido, msg = validar_poligono(pentagono)
+    assert valido is True
+
+    # Hexágono convexo (N = 6)
+    hexagono = [[300, 100], [500, 100], [600, 300], [500, 500], [300, 500], [200, 300]]
+    valido, msg = validar_poligono(hexagono)
+    assert valido is True
+
+    # Rejeição de triângulo com área minúscula (< 500 px)
+    tri_pequeno = [[100, 100], [120, 100], [110, 110]]
+    valido, msg = validar_poligono(tri_pequeno)
+    assert valido is False
+    assert "insuficiente" in msg.lower()
 
 
 def test_normalizar_pontos_roi_clamping():
@@ -115,7 +142,7 @@ def test_normalizar_pontos_roi_clamping():
 
 def test_roi_compatibilidade_detector_pixels():
     """
-    Valida se a lista de 4 vértices normalizados é compatível
+    Valida se a lista de vértices normalizados (4 ou N vértices) é compatível
     com DetectorTrafego.roi_para_pixels e operações do OpenCV.
     """
     roi_normalizada = [
@@ -124,22 +151,25 @@ def test_roi_compatibilidade_detector_pixels():
         [0.8, 0.9],
         [0.2, 0.9]
     ]
-    shape = (720, 1280, 3)  # h=720, w=1280
-    poly = DetectorTrafego.roi_para_pixels(roi_normalizada, shape)
+    shape_frame = (720, 1280, 3)
+    roi_px = DetectorTrafego.roi_para_pixels(roi_normalizada, shape_frame)
 
-    assert isinstance(poly, np.ndarray)
-    assert poly.shape == (4, 2)
-    assert poly.dtype == np.int32
+    assert isinstance(roi_px, np.ndarray)
+    assert roi_px.shape == (4, 2)
+    assert roi_px.dtype == np.int32
+    assert roi_px[0].tolist() == [256, 216]
+    assert roi_px[1].tolist() == [1024, 216]
+    assert roi_px[2].tolist() == [1024, 648]
+    assert roi_px[3].tolist() == [256, 648]
 
-    # p0: (0.2 * 1280, 0.3 * 720) = (256, 216)
-    np.testing.assert_array_equal(poly[0], [256, 216])
-    # p1: (0.8 * 1280, 0.3 * 720) = (1024, 216)
-    np.testing.assert_array_equal(poly[1], [1024, 216])
-    # p2: (0.8 * 1280, 0.9 * 720) = (1024, 648)
-    np.testing.assert_array_equal(poly[2], [1024, 648])
-    # p3: (0.2 * 1280, 0.9 * 720) = (256, 648)
-    np.testing.assert_array_equal(poly[3], [256, 648])
+    # Teste de ponto dentro da ROI
+    ponto_dentro = (640, 400)
+    ponto_fora = (100, 100)
+    assert DetectorTrafego.ponto_dentro_roi(ponto_dentro, roi_px) is True
+    assert DetectorTrafego.ponto_dentro_roi(ponto_fora, roi_px) is False
 
-    # Valida teste de ponto dentro da ROI
-    assert DetectorTrafego.ponto_dentro_roi((640, 400), poly) is True
-    assert DetectorTrafego.ponto_dentro_roi((100, 100), poly) is False
+    # Teste com N vértices (Pentágono)
+    pent_norm = [[0.3, 0.1], [0.7, 0.1], [0.9, 0.5], [0.7, 0.9], [0.3, 0.9]]
+    pent_px = DetectorTrafego.roi_para_pixels(pent_norm, shape_frame)
+    assert len(pent_px) == 5
+    assert DetectorTrafego.ponto_dentro_roi((640, 360), pent_px) is True
