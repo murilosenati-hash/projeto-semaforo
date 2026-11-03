@@ -735,6 +735,14 @@ def criar_handler_http(controlador: ControladorDistribuido):
     return SemaforoHTTPHandler
 
 
+def iniciar_servidor_http(controlador: ControladorDistribuido, host: str = "0.0.0.0", port: int = 8080):
+    """Inicia o servidor HTTP para atender página web e API REST."""
+    handler = criar_handler_http(controlador)
+    httpd = HTTPServer((host, port), handler)
+    logging.info(f"[SERVIDOR-HTTP] Servidor ativo em http://{host}:{port}/")
+    httpd.serve_forever()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Servidor Central Distribuído do Semáforo Inteligente")
     parser.add_argument("--host", default="0.0.0.0", help="Endereço IP de bind (padrão: 0.0.0.0)")
