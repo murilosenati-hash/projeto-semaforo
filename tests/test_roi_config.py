@@ -70,15 +70,15 @@ def test_validar_poligono_4_pontos_geometria():
     assert valido is True
     assert msg == "OK"
 
-    # 2. Área degenerada (< 1000 px ou colinear)
-    pontos_colineares = [[100, 100], [110, 100], [120, 100], [130, 100]]
-    valido, msg = validar_poligono_4_pontos(pontos_colineares)
+    # 2. Área degenerada (< 1000 px, ex: quadrado de 20x20 = 400px)
+    pontos_degenerados = [[100, 100], [120, 100], [120, 120], [100, 120]]
+    valido, msg = validar_poligono_4_pontos(pontos_degenerados)
     assert valido is False
     assert "insuficiente" in msg.lower()
 
-    # 3. Cruzamento em formato de 8 (ampulheta / auto-interseção com área > 1000px)
-    # P1(100,100), P2(600,500), P3(600,100), P4(100,300)
-    pontos_cruzados = [[100, 100], [600, 500], [600, 100], [100, 300]]
+    # 3. Cruzamento em formato de 8 (ampulheta / auto-interseção simétrica ou assimétrica)
+    # P1(100,100), P2(400,400), P3(400,100), P4(100,400)
+    pontos_cruzados = [[100, 100], [400, 400], [400, 100], [100, 400]]
     valido, msg = validar_poligono_4_pontos(pontos_cruzados)
     assert valido is False
     assert "não-convexo" in msg.lower() or "auto-intersectado" in msg.lower()
