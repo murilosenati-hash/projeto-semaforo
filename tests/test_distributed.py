@@ -110,3 +110,20 @@ def test_servidor_rotas_web_display_html():
             assert dados["luzes"]["pedestre"]["vermelho"] is True
     finally:
         httpd.shutdown()
+
+
+def test_main_integrated_servidor_web_embutido():
+    """Garante que main_integrated inicia o servidor web na mesma FSM."""
+    from main_integrated import iniciar_servidor_web_embutido
+    fsm = ControladorSemaforoFSM()
+    porta_teste = 18099
+    controlador = iniciar_servidor_web_embutido(fsm, host="127.0.0.1", port=porta_teste)
+    assert controlador is not None
+    time.sleep(0.15)
+
+    url = f"http://127.0.0.1:{porta_teste}/api/status"
+    with urllib.request.urlopen(url, timeout=2.0) as resp:
+        assert resp.status == 200
+        dados = json.loads(resp.read().decode("utf-8"))
+        assert dados["estado"] == fsm.estado_atual.value
+        assert dados["luzes"]["carro"]["verde"] is True
