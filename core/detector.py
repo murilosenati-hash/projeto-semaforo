@@ -11,6 +11,13 @@ CLASSES_VEICULOS = {
     5: "Onibus",
     7: "Caminhao"
 }
+CLASSES_ANIMAIS = {
+    15: 'gato',
+    16: 'cachorro',
+    17: 'cavalo',
+    18: 'ovelha',
+    19: 'vaca'
+}
 CLASSES_ALVO = [CLASSE_PESSOA] + list(CLASSES_VEICULOS.keys()) + list(CLASSES_ANIMAIS.keys())
 
 
