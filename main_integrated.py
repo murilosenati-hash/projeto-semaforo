@@ -4,15 +4,37 @@ import time
 import argparse
 import os
 import json
+import threading
+import logging
 from core.detector import DetectorTrafego, DebouncePedestre
 from core.fsm import ControladorSemaforoFSM, EstadoSemaforo
 from core.video_stream import ThreadedVideoStream
 from core.traffic_simulator import SimuladorTrafegoVirtual
+from distributed.server import ControladorDistribuido, iniciar_servidor_http
 
 CONFIG_ROI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config_roi.json')
 ROI_PADRAO_VEICULOS = [(0.15, 0.30), (0.85, 0.30), (0.98, 0.98), (0.02, 0.98)]
 ROI_PADRAO_PEDESTRES = [(0.02, 0.50), (0.22, 0.50), (0.22, 0.95), (0.02, 0.95)]
 ROI_PADRAO = ROI_PADRAO_VEICULOS
+
+
+def iniciar_servidor_web_embutido(fsm: ControladorSemaforoFSM, host: str = "0.0.0.0", port: int = 8080):
+    """Inicia o servidor web do display sincronizado na mesma FSM em background."""
+    controlador = ControladorDistribuido(fsm=fsm)
+    try:
+        t = threading.Thread(
+            target=iniciar_servidor_http,
+            args=(controlador, host, port),
+            daemon=True,
+        )
+        t.start()
+        logging.info(f"[WEB DISPLAY] Servidor ativo em http://{host}:{port}/ (sincronizado com FSM local)")
+        print(f"[WEB DISPLAY] Display Web ativo em http://{host}:{port}/ e /display (sincronizado com FSM)")
+        return controlador
+    except Exception as e:
+        logging.warning(f"[WEB DISPLAY] Não foi possível iniciar servidor web embutido na porta {port}: {e}")
+        return None
+
 
 
 def carregar_rois(caminho=None) -> dict:
@@ -319,9 +341,12 @@ def main():
     parser.add_argument("--yolo", default="yolov8n.pt", help="Caminho do modelo YOLOv8")
     parser.add_argument("--skip", type=int, default=3, help="Pulo de frames (padrão: 3)")
     parser.add_argument("--imgsz", type=int, default=320, help="Resolução da inferência (padrão: 320)")
-    parser.add_argument("--simular-carros", action="store_true", default=False, help="Ativa simulação AR de carros virtuais na via")
+    parser.add_argument("--simular-carros", action="store_true", help="Ativa simulação de tráfego AR virtual em tempo real")
     parser.add_argument("--carros-spawn", type=float, default=3.5, help="Intervalo em segundos entre spawn de carros virtuais")
     parser.add_argument("--carros-max", type=int, default=5, help="Capacidade máxima de carros virtuais na pista")
+    parser.add_argument("--web-port", type=int, default=8080, help="Porta do display web embutido (padrão: 8080)")
+    parser.add_argument("--web-host", default="0.0.0.0", help="Host de bind do display web (padrão: 0.0.0.0)")
+    parser.add_argument("--sem-web", action="store_true", help="Desativa o servidor web embutido")
     args = parser.parse_args()
 
     fonte_str = str(args.source).strip()
@@ -351,6 +376,13 @@ def main():
         tempo_verde_pedestre=8.0,
         tempo_pisca_pedestre=3.0
     )
+
+    # Inicia display web embutido na mesma FSM para o notebook e celular
+    controlador_web = None
+    if not getattr(args, "sem_web", False):
+        web_host = getattr(args, "web_host", "0.0.0.0")
+        web_port = getattr(args, "web_port", 8080)
+        controlador_web = iniciar_servidor_web_embutido(fsm, host=web_host, port=web_port)
 
     # Inicializa simulador de tráfego AR (Nível 2 Híbrido)
     simulador_ar = SimuladorTrafegoVirtual(
