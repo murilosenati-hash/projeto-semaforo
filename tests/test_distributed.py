@@ -58,6 +58,7 @@ def test_comunicacao_distribuida_tcp_e_http():
         # 3. Verifica transição para AMARELO_CARRO após min_verde_carro com pedestre/animal
         time.sleep(0.25)
         resp_transicao = sensor_norte.enviar_leitura(veiculos=5, pedestres=2, animais=1)
+        assert resp_transicao is not None
         assert resp_transicao["estado"] == EstadoSemaforo.AMARELO_CARRO.value
 
         sensor_norte.fechar()
