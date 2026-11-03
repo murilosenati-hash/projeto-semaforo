@@ -322,7 +322,7 @@ class SimuladorTrafegoVirtual:
 
                 # Parada na Stop Line com desconto da metade do comprimento (frente antes da faixa)
                 limite_stop = self.stop_line - (v.comprimento * 0.5)
-                if not sinal_aberto and v.posicao <= limite_stop:
+                if not sinal_aberto and v.posicao <= self.stop_line:
                     limite_parada = min(limite_parada, limite_stop)
 
                 distancia_alvo = limite_parada - v.posicao
