@@ -117,13 +117,17 @@ def test_main_integrated_servidor_web_embutido():
     from main_integrated import iniciar_servidor_web_embutido
     fsm = ControladorSemaforoFSM()
     porta_teste = 18099
-    controlador = iniciar_servidor_web_embutido(fsm, host="127.0.0.1", port=porta_teste)
-    assert controlador is not None
+    srv = iniciar_servidor_web_embutido(fsm, host="127.0.0.1", port=porta_teste)
+    assert srv is not None
     time.sleep(0.15)
 
-    url = f"http://127.0.0.1:{porta_teste}/api/status"
-    with urllib.request.urlopen(url, timeout=2.0) as resp:
-        assert resp.status == 200
-        dados = json.loads(resp.read().decode("utf-8"))
-        assert dados["estado"] == fsm.estado_atual.value
-        assert dados["luzes"]["carro"]["verde"] is True
+    try:
+        url = f"http://127.0.0.1:{porta_teste}/api/status"
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            assert resp.status == 200
+            dados = json.loads(resp.read().decode("utf-8"))
+            assert dados["estado"] == fsm.estado_atual.value
+            assert dados["luzes"]["carro"]["verde"] is True
+    finally:
+        if hasattr(srv, "shutdown"):
+            srv.shutdown()

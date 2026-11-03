@@ -6,11 +6,12 @@ import os
 import json
 import threading
 import logging
+from http.server import HTTPServer
 from core.detector import DetectorTrafego, DebouncePedestre
 from core.fsm import ControladorSemaforoFSM, EstadoSemaforo
 from core.video_stream import ThreadedVideoStream
 from core.traffic_simulator import SimuladorTrafegoVirtual
-from distributed.server import ControladorDistribuido, iniciar_servidor_http
+from distributed.server import ControladorDistribuido, criar_handler_http, iniciar_servidor_http
 
 CONFIG_ROI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config_roi.json')
 ROI_PADRAO_VEICULOS = [(0.15, 0.30), (0.85, 0.30), (0.98, 0.98), (0.02, 0.98)]
@@ -18,22 +19,15 @@ ROI_PADRAO_PEDESTRES = [(0.02, 0.50), (0.22, 0.50), (0.22, 0.95), (0.02, 0.95)]
 ROI_PADRAO = ROI_PADRAO_VEICULOS
 
 
-def iniciar_servidor_web_embutido(fsm: ControladorSemaforoFSM, host: str = "0.0.0.0", port: int = 8080):
-    """Inicia o servidor web do display sincronizado na mesma FSM em background."""
+def iniciar_servidor_web_embutido(fsm, host: str = '0.0.0.0', port: int = 8080):
+    """Inicia o servidor HTTP em background na mesma FSM para display web e telemetria."""
     controlador = ControladorDistribuido(fsm=fsm)
-    try:
-        t = threading.Thread(
-            target=iniciar_servidor_http,
-            args=(controlador, host, port),
-            daemon=True,
-        )
-        t.start()
-        logging.info(f"[WEB DISPLAY] Servidor ativo em http://{host}:{port}/ (sincronizado com FSM local)")
-        print(f"[WEB DISPLAY] Display Web ativo em http://{host}:{port}/ e /display (sincronizado com FSM)")
-        return controlador
-    except Exception as e:
-        logging.warning(f"[WEB DISPLAY] Não foi possível iniciar servidor web embutido na porta {port}: {e}")
-        return None
+    httpd = HTTPServer((host, port), criar_handler_http(controlador))
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    logging.info(f"[WEB DISPLAY] Servidor ativo em http://{host}:{port}/ (sincronizado com FSM local)")
+    print(f"[WEB DISPLAY] Display Web ativo em http://{host}:{port}/ e /display (sincronizado com FSM)")
+    return httpd
 
 
 
