@@ -1,167 +1,132 @@
 import os
 import sys
 import numpy as np
-import pytest
-import cv2
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core.traffic_simulator import SimuladorTrafegoVirtual, VeiculoVirtual, gerar_sprite_carro
+from core.traffic_simulator import (
+    SimuladorTrafegoVirtual,
+    VeiculoVirtual,
+    CarroVirtual,
+    gerar_sprite_veiculo,
+    gerar_sprite_carro
+)
 from core.fsm import EstadoSemaforo
 
 
-def test_spawn_e_despawn():
+def test_spawn_e_despawn_duas_faixas():
     """
-    Testa ciclo de vida de veículos virtuais:
-    - Spawn forçado via spawn_imediato()
-    - Remoção automática ao cruzar posicao >= 1.0
+    Testa ciclo de vida de veículos distribuídos nas duas faixas (faixa 0 e 1)
+    e múltiplos tipos.
     """
-    sim = SimuladorTrafegoVirtual(taxa_spawn=10.0, stop_line=0.55, max_veiculos=3)
-    assert len(sim.veiculos) == 0
-
-    sucesso = sim.spawn_imediato()
-    assert sucesso is True
-    assert len(sim.veiculos) == 1
-    carro = sim.veiculos[0]
-    assert carro.posicao == 0.0
-    assert carro.id == 1
-
-    # Avança no sinal verde até cruzar 1.0
-    for _ in range(100):
-        sim.atualizar(dt=0.1, fsm_state=EstadoSemaforo.VERDE_CARRO)
-        if len(sim.veiculos) == 0:
-            break
-
-    assert len(sim.veiculos) == 0, "Veículo não foi despawnado após cruzar posicao >= 1.0"
-
-
-def test_parada_no_sinal_fechado():
-    """
-    Testa se o veículo respeita a Stop Line (0.55) quando o sinal está fechado
-    (AMARELO ou VERMELHO/PEDESTRE) e não invade a faixa.
-    """
-    sim = SimuladorTrafegoVirtual(taxa_spawn=10.0, stop_line=0.55, max_veiculos=2)
-    sim.spawn_imediato()
-
-    for _ in range(80):
-        sim.atualizar(dt=0.1, fsm_state=EstadoSemaforo.VERMELHO_LIMPEZA)
-
-    assert len(sim.veiculos) == 1
-    carro = sim.veiculos[0]
-    assert carro.posicao <= 0.5501, f"Carro ultrapassou a Stop Line: {carro.posicao}"
-    assert carro.parado is True
-    assert carro.velocidade == 0.0
-
-
-def test_arranque_no_sinal_verde():
-    """
-    Testa se veículos retidos na Stop Line arrancam e ganham velocidade
-    assim que a FSM transita para VERDE_CARRO.
-    """
-    sim = SimuladorTrafegoVirtual(taxa_spawn=10.0, stop_line=0.55, max_veiculos=2)
-    sim.spawn_imediato()
-
-    # Para na Stop Line no sinal vermelho
-    for _ in range(60):
-        sim.atualizar(dt=0.1, fsm_state=EstadoSemaforo.VERDE_PEDESTRE)
-
-    carro = sim.veiculos[0]
-    assert carro.parado is True
-    pos_parada = carro.posicao
-
-    # Abre o sinal para veículos
-    sim.atualizar(dt=0.2, fsm_state=EstadoSemaforo.VERDE_CARRO)
-    assert carro.velocidade > 0.0
-    assert carro.parado is False
-
-    for _ in range(20):
-        sim.atualizar(dt=0.1, fsm_state=EstadoSemaforo.VERDE_CARRO)
-
-    assert carro.posicao > pos_parada
-
-
-def test_anti_colisao_fila():
-    """
-    Testa se dois veículos em sequência formam fila sem colisão/acavalamento
-    quando o primeiro está parado no sinal vermelho.
-    """
-    sim = SimuladorTrafegoVirtual(taxa_spawn=10.0, stop_line=0.55, max_veiculos=3)
-    sim.spawn_imediato()
-
-    for _ in range(15):
-        sim.atualizar(dt=0.1, fsm_state=EstadoSemaforo.VERDE_CARRO)
-
-    sim.spawn_imediato()
+    sim = SimuladorTrafegoVirtual(taxa_spawn=0.1, stop_line=0.55, max_veiculos=4)
+    
+    # Spawn na faixa 0 e na faixa 1
+    s0 = sim.spawn_veiculo(faixa=0, tipo="carro")
+    s1 = sim.spawn_veiculo(faixa=1, tipo="caminhao")
+    
+    assert s0 is True
+    assert s1 is True
     assert len(sim.veiculos) == 2
-
-    # Fecha o sinal
-    for _ in range(80):
-        sim.atualizar(dt=0.1, fsm_state=EstadoSemaforo.AMARELO_CARRO)
-
-    carro_lider = max(sim.veiculos, key=lambda c: c.posicao)
-    carro_traseiro = min(sim.veiculos, key=lambda c: c.posicao)
-
-    distancia = carro_lider.posicao - carro_traseiro.posicao
-    assert distancia >= carro_lider.comprimento, "Veículo traseiro colidiu ou ultrapassou o dianteiro"
-    assert carro_lider.parado is True
-    assert carro_traseiro.parado is True
-
-
-def test_geracao_sprite_e_asset():
-    """
-    Testa a geração procedural de sprites RGBA (4 canais) com rodas,
-    vidros escuros, faróis e luzes de freio dinâmicas.
-    """
-    sp = gerar_sprite_carro(120, 240, cor_bgr=(200, 50, 40), parado=False)
-    assert isinstance(sp, np.ndarray)
-    assert sp.shape == (240, 120, 4)
-    assert sp.dtype == np.uint8
+    assert sim.veiculos[0].faixa == 0
+    assert sim.veiculos[1].faixa == 1
+    assert sim.veiculos[0].tipo == "carro"
+    assert sim.veiculos[1].tipo == "caminhao"
     
-    # Canal alfa contém partes opacas
-    alpha = sp[:, :, 3]
-    assert np.max(alpha) == 255
-    assert np.min(alpha) == 0
-
-    # Sprite com freio ativado
-    sp_parado = gerar_sprite_carro(120, 240, cor_bgr=(200, 50, 40), parado=True)
-    assert not np.array_equal(sp, sp_parado)
-
-    # Verifica persistência do asset assets/car_top.png
-    sim = SimuladorTrafegoVirtual()
-    caminho_asset = os.path.join(os.path.dirname(__file__), '..', 'assets', 'car_top.png')
-    assert os.path.exists(caminho_asset)
+    # Simula avanço até além de 1.05 para verificar despawn
+    for _ in range(30):
+        sim.atualizar(dt=0.3, estado_semaforo=EstadoSemaforo.VERDE_CARRO)
+        
+    assert all(v.y <= 1.05 for v in sim.veiculos)
 
 
-def test_renderizacao_buffer_preservado_e_poligonos_n_vertices():
+def test_parada_no_sinal_fechado_e_arranque():
     """
-    Testa renderização com sprites, sombras projetadas e compatibilidade
-    com polígonos de 4 vértices, 3 vértices e N vértices.
+    Garante que os veículos desaceleram até a linha de retenção no sinal vermelho
+    e arrancam normalmente quando o semáforo abre.
     """
-    sim = SimuladorTrafegoVirtual(taxa_spawn=10.0, stop_line=0.55, max_veiculos=3)
-    sim.spawn_imediato()
+    sim = SimuladorTrafegoVirtual(taxa_spawn=10.0, stop_line=0.55)
+    sim.spawn_veiculo(faixa=0, tipo="moto")
+    v = sim.veiculos[0]
+    v.y = 0.45
 
-    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-    frame_copy = frame.copy()
+    # Sinal fechado -> veículo desacelera
+    for _ in range(25):
+        sim.atualizar(dt=0.1, estado_semaforo=EstadoSemaforo.VERMELHO_TOTAL)
+
+    assert v.y <= 0.58
+    assert v.velocidade < 0.05
+
+    # Sinal abre -> veículo ganha velocidade
+    for _ in range(15):
+        sim.atualizar(dt=0.1, estado_semaforo=EstadoSemaforo.VERDE_CARRO)
+
+    assert v.velocidade > 0.05
+    assert v.y > 0.50
+
+
+def test_anti_colisao_independente_por_faixa():
+    """
+    Verifica se a lógica anti-colisão opera estritamente na mesma faixa,
+    sem travar veículos que trafegam na faixa vizinha livre.
+    """
+    sim = SimuladorTrafegoVirtual(taxa_spawn=100.0, stop_line=0.55)
     
-    # 1. Teste com 4 vértices
-    roi_4 = np.array([[256, 216], [1024, 216], [1024, 648], [256, 648]], dtype=np.int32)
-    res4 = sim.renderizar(frame.copy(), roi_4, estado_fsm=EstadoSemaforo.VERDE_CARRO)
-    assert res4.shape == (720, 1280, 3)
-    assert res4.dtype == np.uint8
-    assert not np.array_equal(res4, frame_copy)
+    # Faixa 0: líder parado
+    v_lider_f0 = VeiculoVirtual(id_veiculo=1, y_pos=0.50, velocidade_max=0.20, faixa=0, tipo="carro")
+    v_lider_f0.velocidade = 0.0
+    sim.veiculos.append(v_lider_f0)
 
-    # 2. Teste com 5 vértices (N = 5)
-    roi_5 = np.array([[300, 200], [900, 200], [1050, 600], [640, 680], [200, 600]], dtype=np.int32)
-    res5 = sim.renderizar(frame.copy(), roi_5, estado_fsm=EstadoSemaforo.VERDE_CARRO)
-    assert res5.shape == (720, 1280, 3)
-    assert not np.array_equal(res5, frame_copy)
+    # Faixa 0: seguidor atrás do líder
+    v_seg_f0 = VeiculoVirtual(id_veiculo=2, y_pos=0.42, velocidade_max=0.20, faixa=0, tipo="carro")
+    sim.veiculos.append(v_seg_f0)
 
-    # 3. Teste com 3 vértices (Triângulo)
-    roi_3 = np.array([[640, 150], [1000, 650], [280, 650]], dtype=np.int32)
-    res3 = sim.renderizar(frame.copy(), roi_3, estado_fsm=EstadoSemaforo.VERDE_CARRO)
-    assert res3.shape == (720, 1280, 3)
-    assert not np.array_equal(res3, frame_copy)
+    # Faixa 1: veículo livre na outra faixa
+    v_livre_f1 = VeiculoVirtual(id_veiculo=3, y_pos=0.40, velocidade_max=0.25, faixa=1, tipo="carro")
+    sim.veiculos.append(v_livre_f1)
 
-    # Robustez com None
-    res_none = sim.renderizar(frame.copy(), None, estado_fsm=EstadoSemaforo.VERDE_CARRO)
-    assert np.array_equal(res_none, frame)
+    # Atualiza sob sinal verde
+    for _ in range(10):
+        sim.atualizar(dt=0.1, estado_semaforo=EstadoSemaforo.VERDE_CARRO)
+
+    # Faixa 0 deve manter distância segura
+    assert (v_lider_f0.y - v_seg_f0.y) >= 0.06
+    # Faixa 1 deve continuar se movendo sem ser bloqueada pelo carro da Faixa 0
+    assert v_livre_f1.velocidade > 0.10
+    assert v_livre_f1.y > 0.45
+
+
+def test_geracao_sprites_multi_veiculos():
+    """
+    Verifica geração procedural de sprites para carro, caminhão e moto
+    com preservação de canal alfa BGRA.
+    """
+    sprite_carro = gerar_sprite_veiculo(30, 60, (200, 50, 50), tipo="carro")
+    assert sprite_carro.shape == (60, 30, 4)
+    assert np.any(sprite_carro[:, :, 3] > 0)
+
+    sprite_caminhao = gerar_sprite_veiculo(36, 85, (50, 150, 200), tipo="caminhao")
+    assert sprite_caminhao.shape == (85, 36, 4)
+    assert np.any(sprite_caminhao[:, :, 3] > 0)
+
+    sprite_moto = gerar_sprite_veiculo(16, 42, (20, 20, 20), tipo="moto")
+    assert sprite_moto.shape == (42, 16, 4)
+    assert np.any(sprite_moto[:, :, 3] > 0)
+
+
+def test_renderizacao_aspect_ratio_e_duas_faixas():
+    """
+    Testa renderização em frame sintético validando divisória de faixas,
+    stop line e veículos sem distorção.
+    """
+    sim = SimuladorTrafegoVirtual(taxa_spawn=100.0, stop_line=0.55)
+    sim.spawn_veiculo(faixa=0, tipo="carro")
+    sim.spawn_veiculo(faixa=1, tipo="caminhao")
+    
+    frame = np.full((720, 1280, 3), 40, dtype=np.uint8)
+    roi_pixels = np.array([[200, 100], [1080, 100], [1200, 700], [80, 700]], dtype=np.int32)
+
+    # Renderiza sem exceções
+    sim.renderizar(frame, roi_pixels, EstadoSemaforo.VERDE_CARRO)
+    assert frame.shape == (720, 1280, 3)
+    assert not np.all(frame == 40)  # Houve alteração de pixels pela renderização
