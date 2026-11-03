@@ -315,7 +315,7 @@ class SimuladorTrafegoVirtual:
             c_td = margem * pt_tras_esq + (1 - margem) * pt_tras_dir
             c_te = (1 - margem) * pt_tras_esq + margem * pt_tras_dir
 
-            dst_pts = np.float32([c_fe, c_fd, c_td, c_te])
+            dst_pts = np.array([c_fe, c_fd, c_td, c_te], dtype=np.float32)
             
             # Centro e dimensões do veículo
             centro_x = int(np.mean(dst_pts[:, 0]))
@@ -337,7 +337,7 @@ class SimuladorTrafegoVirtual:
             # 2.2 Projeção do Sprite com Textura e Canal Alfa
             sprite = self._obter_sprite(v.cor, v.parado)
             H_s, W_s = sprite.shape[:2]
-            src_pts = np.float32([[0, 0], [W_s, 0], [W_s, H_s], [0, H_s]])
+            src_pts = np.array([[0, 0], [W_s, 0], [W_s, H_s], [0, H_s]], dtype=np.float32)
 
             min_x = max(0, int(np.min(dst_pts[:, 0])) - 1)
             max_x = min(w_frame, int(np.max(dst_pts[:, 0])) + 1)

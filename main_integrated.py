@@ -47,25 +47,30 @@ def salvar_roi(roi, caminho=None):
         return False
 
 
-def validar_poligono_4_pontos(pts):
+def validar_poligono(pts):
     """
-    Valida se os 4 pontos formam um polígono válido e não-degenerado:
-    - Área mínima >= 1000 px
+    Valida se os pontos (N >= 3) formam um polígono válido e não-degenerado:
+    - Área mínima >= 500 px
     - Contorno estritamente convexo (impede auto-interseção / formato de 8)
     Retorna: (valido: bool, mensagem: str)
     """
-    if len(pts) != 4:
-        return False, f"Necessário exatamente 4 pontos (fornecidos: {len(pts)})"
+    if len(pts) < 3:
+        return False, f"Necessário no mínimo 3 pontos (fornecidos: {len(pts)})"
     
     cnt = np.array(pts, dtype=np.int32)
     if not cv2.isContourConvex(cnt):
         return False, "Polígono não-convexo ou auto-intersectado (formato de 8). Clique na ordem horária."
 
     area = cv2.contourArea(cnt)
-    if area < 1000.0:
-        return False, f"Área insuficiente ({area:.0f}px < 1000px). Evite pontos colineares."
+    if area < 500.0:
+        return False, f"Área insuficiente ({area:.0f}px < 500px). Evite pontos colineares."
 
     return True, "OK"
+
+
+def validar_poligono_4_pontos(pts):
+    """Alias de compatibilidade."""
+    return validar_poligono(pts)
 
 
 def normalizar_pontos_roi(pts, fw, fh):
@@ -83,10 +88,10 @@ def normalizar_pontos_roi(pts, fw, fh):
     ]
 
 
-def selecionar_poligono_4_pontos(nome_janela, frame_base, roi_atual=None):
+def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None):
     """
-    Seletor interativo de 4 vértices para calibração de perspectiva de ROI.
-    Exibe Banner OSD no frame e validação de geometria convexa.
+    Seletor interativo de polígono livre de N vértices (N >= 3) para calibração de ROI.
+    ENTER ou ESPAÇO finaliza e valida a geometria (área >= 500 px e convexidade).
     """
     fh, fw = frame_base.shape[:2]
     cv2.namedWindow(nome_janela, cv2.WINDOW_NORMAL)
@@ -101,17 +106,9 @@ def selecionar_poligono_4_pontos(nome_janela, frame_base, roi_atual=None):
     def mouse_callback(event, x, y, flags, param):
         nonlocal msg_status, status_cor
         if event == cv2.EVENT_LBUTTONDOWN:
-            if len(pontos_clicados) < 4:
-                pontos_clicados.append([x, y])
-                msg_status = ""
-                if len(pontos_clicados) == 4:
-                    valido, motivo = validar_poligono_4_pontos(pontos_clicados)
-                    if valido:
-                        msg_status = "Poligono Completo! [ENTER/ESPACO] Salvar | [C] Limpar | [ESC] Cancelar"
-                        status_cor = (0, 255, 0)
-                    else:
-                        msg_status = f"[INVALIDO] {motivo} | [C] Limpar"
-                        status_cor = (0, 0, 255)
+            pontos_clicados.append([x, y])
+            msg_status = f"Ponto P{len(pontos_clicados)} marcado. [ENTER/ESPACO] para validar e salvar"
+            status_cor = (0, 255, 255)
 
     cv2.setMouseCallback(nome_janela, mouse_callback)
 
@@ -127,14 +124,14 @@ def selecionar_poligono_4_pontos(nome_janela, frame_base, roi_atual=None):
 
             # Texto do Banner OSD
             n_pts = len(pontos_clicados)
-            if n_pts < 4:
-                texto_banner = f"MODO CALIBRACAO ROI | Clique no Ponto {n_pts + 1}/4 | [C] Limpar | [ESC] Cancelar"
+            if n_pts < 3:
+                texto_banner = f"MODO CALIBRACAO ROI (LIVRE) | Vértices: {n_pts} (min 3) | [C] Limpar | [ESC] Cancelar"
                 cor_banner = (0, 255, 255)
             else:
-                texto_banner = msg_status if msg_status else "Poligono Completo! [ENTER/ESPACO] Salvar | [C] Limpar"
+                texto_banner = msg_status if msg_status else f"Polígono com {n_pts} vértices | [ENTER/ESPACO] Salvar | [C] Limpar"
                 cor_banner = status_cor
 
-            cv2.putText(frame_vis, texto_banner, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, cor_banner, 2)
+            cv2.putText(frame_vis, texto_banner, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.60, cor_banner, 2)
 
             # Desenho dos vértices e arestas
             if n_pts > 0:
@@ -148,11 +145,11 @@ def selecionar_poligono_4_pontos(nome_janela, frame_base, roi_atual=None):
                 for idx in range(n_pts - 1):
                     cv2.line(frame_vis, tuple(pontos_clicados[idx]), tuple(pontos_clicados[idx + 1]), (0, 255, 255), 2)
 
-                # Se tiver os 4 pontos, fecha o polígono e aplica preenchimento semitransparente
-                if n_pts == 4:
-                    valido, _ = validar_poligono_4_pontos(pontos_clicados)
+                # Se tiver no mínimo 3 pontos, traça fechamento e aplica preenchimento semitransparente
+                if n_pts >= 3:
+                    valido, _ = validar_poligono(pontos_clicados)
                     cor_linha = (0, 255, 0) if valido else (0, 0, 255)
-                    cv2.line(frame_vis, tuple(pontos_clicados[3]), tuple(pontos_clicados[0]), cor_linha, 2)
+                    cv2.line(frame_vis, tuple(pontos_clicados[-1]), tuple(pontos_clicados[0]), cor_linha, 2)
 
                     if valido:
                         overlay_poly = frame_vis.copy()
@@ -173,12 +170,12 @@ def selecionar_poligono_4_pontos(nome_janela, frame_base, roi_atual=None):
                 pontos_clicados.clear()
                 msg_status = ""
                 status_cor = (0, 255, 255)
-                print("[ROI] Pontos reiniciados. Clique novamente nos 4 cantos.")
+                print("[ROI] Pontos reiniciados. Clique nos novos vértices.")
 
-            # SPACE (32) ou ENTER (13): confirma se 4 pontos válidos
+            # SPACE (32) ou ENTER (13): confirma se >= 3 pontos válidos
             elif key in (13, 32):
-                if len(pontos_clicados) == 4:
-                    valido, motivo = validar_poligono_4_pontos(pontos_clicados)
+                if len(pontos_clicados) >= 3:
+                    valido, motivo = validar_poligono(pontos_clicados)
                     if valido:
                         roi_norm = normalizar_pontos_roi(pontos_clicados, fw, fh)
                         print(f"[ROI] Calibração concluída com sucesso! Vértices: {roi_norm}")
@@ -187,11 +184,15 @@ def selecionar_poligono_4_pontos(nome_janela, frame_base, roi_atual=None):
                         msg_status = f"[INVALIDO] {motivo} | [C] Limpar"
                         status_cor = (0, 0, 255)
                 else:
-                    msg_status = f"Selecione os 4 pontos antes de salvar ({len(pontos_clicados)}/4)"
-                    status_cor = (0, 0, 255)
+                    msg_status = f"Selecione no mínimo 3 pontos antes de salvar ({len(pontos_clicados)} marcados)"
+                    status_cor = (0, 255, 255)
     finally:
         # Deregistração obrigatória do callback de mouse
         cv2.setMouseCallback(nome_janela, lambda *args: None)
+
+
+# Alias de retrocompatibilidade
+selecionar_poligono_4_pontos = selecionar_poligono_livre
 
 
 def desenhar_painel_semaforo(frame, fsm, ar_ativo=False):
