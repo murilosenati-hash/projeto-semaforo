@@ -57,13 +57,13 @@ def validar_poligono_4_pontos(pts):
         return False, f"Necessário exatamente 4 pontos (fornecidos: {len(pts)})"
     
     cnt = np.array(pts, dtype=np.int32)
+    if not cv2.isContourConvex(cnt):
+        return False, "Polígono não-convexo ou auto-intersectado (formato de 8). Clique na ordem horária."
+
     area = cv2.contourArea(cnt)
     if area < 1000.0:
         return False, f"Área insuficiente ({area:.0f}px < 1000px). Evite pontos colineares."
-    
-    if not cv2.isContourConvex(cnt):
-        return False, "Polígono não-convexo ou auto-intersectado (formato de 8). Clique na ordem horária."
-    
+
     return True, "OK"
 
 
