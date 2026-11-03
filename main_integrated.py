@@ -7,6 +7,7 @@ import json
 from core.detector import DetectorTrafego
 from core.fsm import ControladorSemaforoFSM, EstadoSemaforo
 from core.video_stream import ThreadedVideoStream
+from core.traffic_simulator import SimuladorTrafegoVirtual
 
 CONFIG_ROI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config_roi.json')
 ROI_PADRAO = [(0.15, 0.30), (0.85, 0.30), (0.98, 0.98), (0.02, 0.98)]
@@ -188,7 +189,7 @@ def selecionar_poligono_4_pontos(nome_janela, frame_base, roi_atual=None):
         cv2.setMouseCallback(nome_janela, lambda *args: None)
 
 
-def desenhar_painel_semaforo(frame, fsm):
+def desenhar_painel_semaforo(frame, fsm, ar_ativo=False):
     """
     Desenha um semáforo virtual digital no canto do frame com luzes realistas.
     """
@@ -222,13 +223,14 @@ def desenhar_painel_semaforo(frame, fsm):
 
     # HUD Superior com Estado e Telemetria
     tempo_no_estado = time.time() - fsm.inicio_estado
-    cv2.rectangle(frame, (20, 20), (450, 140), (0, 0, 0), -1)
-    cv2.rectangle(frame, (20, 20), (450, 140), (0, 255, 255), 2)
+    cv2.rectangle(frame, (20, 20), (490, 140), (0, 0, 0), -1)
+    cv2.rectangle(frame, (20, 20), (490, 140), (0, 255, 255), 2)
 
-    cv2.putText(frame, f"ESTADO: {fsm.estado_atual.value}", (35, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+    tag_ar = " [AR ATIVO]" if ar_ativo else ""
+    cv2.putText(frame, f"ESTADO: {fsm.estado_atual.value}{tag_ar}", (35, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
     cv2.putText(frame, f"TEMPO NO ESTADO: {tempo_no_estado:.1f}s / Meta: {fsm.tempo_verde_calculado:.0f}s", (35, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     cv2.putText(frame, f"SENSORES: {fsm.veiculos_detectados} Veic | {fsm.pedestres_detectados} Ped | {fsm.animais_detectados} Animal", (35, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    cv2.putText(frame, "TECLAS: [P] Ped | [A] Animal | [R] ROI | [Q] Sair", (35, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+    cv2.putText(frame, "TECLAS: [P] Ped | [A] Anim | [R] ROI | [V] AR | [C] Spawn | [X] Clean", (35, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (200, 200, 200), 1)
 
 
 def main():
@@ -237,6 +239,9 @@ def main():
     parser.add_argument("--yolo", default="yolov8n.pt", help="Caminho do modelo YOLOv8")
     parser.add_argument("--skip", type=int, default=3, help="Pulo de frames (padrão: 3)")
     parser.add_argument("--imgsz", type=int, default=320, help="Resolução da inferência (padrão: 320)")
+    parser.add_argument("--simular-carros", action="store_true", default=False, help="Ativa simulação AR de carros virtuais na via")
+    parser.add_argument("--carros-spawn", type=float, default=3.5, help="Intervalo em segundos entre spawn de carros virtuais")
+    parser.add_argument("--carros-max", type=int, default=5, help="Capacidade máxima de carros virtuais na pista")
     args = parser.parse_args()
 
     fonte = args.source
@@ -263,26 +268,44 @@ def main():
         tempo_pisca_pedestre=3.0
     )
 
+    # Inicializa simulador de tráfego AR (Nível 2 Híbrido)
+    simulador_ar = SimuladorTrafegoVirtual(
+        taxa_spawn=args.carros_spawn,
+        stop_line=0.55,
+        max_veiculos=args.carros_max
+    )
+    ar_ativo = args.simular_carros
+
     # Carrega ROI persistida ou fallback padrão
     roi = carregar_roi()
 
     pedestre_manual = False
     animal_manual = False
     inicio_manual = 0
+    tempo_anterior = time.time()
 
     print("=== SEMÁFORO INTELIGENTE ATIVO (OTIMIZADO) ===")
     print(f"[CONFIG] Resolução: {args.imgsz}x{args.imgsz} | Salto: {args.skip} frames | I/O Thread: Ativa")
+    print(f"[CONFIG] Simulação AR: {'ATIVADA' if ar_ativo else 'DESATIVADA'} | Tecla 'V' para alternar")
     print("Pressione P para simular pedestre na faixa")
     print("Pressione A para simular animal na via")
     print("Pressione R para calibrar a Região de Interesse (ROI) via 4 vértices")
+    print("Pressione V para alternar Simulação AR de Carros")
+    print("Pressione C para Spawn Imediato de Carro AR")
+    print("Pressione X para Limpar Carros AR da Pista")
     print("Pressione Q para encerrar")
 
     while True:
+        agora = time.time()
+        dt = agora - tempo_anterior
+        tempo_anterior = agora
+
         ret, frame = stream.read()
         if not ret or frame is None:
             time.sleep(0.01)
             continue
 
+        # 1. Inferência YOLO para detectar pedestres/animais reais na cena física
         resultado = detector.processar_frame(frame, roi_normalizada=roi)
 
         # Se foi acionado manualmente via teclado, mantém por 8s
@@ -290,15 +313,27 @@ def main():
             pedestre_manual = False
             animal_manual = False
 
-        veiculos = resultado["veiculos"]
         pedestres = resultado["pedestres"] or (1 if pedestre_manual else 0)
         animais = resultado["animais"] or (1 if animal_manual else 0)
+
+        # 2. Fusão Sensorial Híbrida: Carros Virtuais AR vs YOLO real
+        if ar_ativo:
+            simulador_ar.atualizar(dt, fsm.estado_atual)
+            veiculos = simulador_ar.obter_contagem_veiculos_roi()
+        else:
+            veiculos = resultado["veiculos"]
 
         fsm.atualizar_sensores(veiculos=veiculos, pedestres=pedestres, animais=animais)
         fsm.tick()
 
         frame_anotado = resultado["frame_anotado"]
-        desenhar_painel_semaforo(frame_anotado, fsm)
+
+        # 3. Renderização em camadas: frame -> carros AR e Stop Line -> HUD Semáforo
+        if ar_ativo:
+            roi_px = DetectorTrafego.roi_para_pixels(roi, frame.shape)
+            simulador_ar.renderizar(frame_anotado, roi_px, fsm.estado_atual)
+
+        desenhar_painel_semaforo(frame_anotado, fsm, ar_ativo=ar_ativo)
 
         cv2.imshow(nome_janela, frame_anotado)
 
@@ -313,11 +348,24 @@ def main():
             animal_manual = True
             inicio_manual = time.time()
             print("[INTERAÇÃO] Animal detectado na pista! Acionando freio e bloqueio de segurança...")
+        elif key == ord('v') or key == ord('V'):
+            ar_ativo = not ar_ativo
+            print(f"[MODO AR] Simulação de veículos AR: {'LIGADA' if ar_ativo else 'DESLIGADA'}")
+        elif key == ord('c') or key == ord('C'):
+            if ar_ativo:
+                spawnow = simulador_ar.spawn_imediato()
+                print(f"[MODO AR] Spawn manual de veículo virtual: {'Sucesso' if spawnow else 'Pista ocupada ou limite atingido'}")
+            else:
+                print("[AVISO] Ative a simulação AR pressionando 'V' para spawnar veículos.")
+        elif key == ord('x') or key == ord('X'):
+            simulador_ar.limpar_pista()
+            print("[MODO AR] Todos os veículos virtuais foram removidos da pista.")
         elif key == ord('r') or key == ord('R'):
             frame_congelado = frame.copy()
             t0 = time.time()
             nova_roi = selecionar_poligono_4_pontos(nome_janela, frame_congelado, roi_atual=roi)
             fsm.inicio_estado += (time.time() - t0)
+            tempo_anterior = time.time()
             if nova_roi is not None:
                 roi = nova_roi
                 salvar_roi(roi)
