@@ -8,7 +8,7 @@ class ThreadedVideoStream:
     Elimina o gargalo onde a CPU fica esperando o disco ou driver da câmera
     decodificar o frame antes de rodar a inferência.
     """
-    def __init__(self, src=0):
+    def __init__(self, src: int | str = 0):
         self.src = src
         self.cap = cv2.VideoCapture(self.src)
         self.grabbed, self.frame = self.cap.read()

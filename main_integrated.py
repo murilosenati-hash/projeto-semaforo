@@ -244,13 +244,16 @@ def main():
     parser.add_argument("--carros-max", type=int, default=5, help="Capacidade máxima de carros virtuais na pista")
     args = parser.parse_args()
 
-    fonte = args.source
-    if str(fonte).isdigit():
-        fonte = int(fonte)
-    elif not os.path.exists(str(fonte)) and fonte != 0:
-        # Se não achou o vídeo local, tenta webcam
-        print(f"[AVISO] Arquivo {fonte} não encontrado. Tentando webcam padrão (0)...")
+    fonte_str = str(args.source).strip()
+    if fonte_str.isdigit():
+        fonte = int(fonte_str)
+    elif fonte_str.startswith(("http://", "https://", "rtsp://")):
+        fonte = fonte_str
+    elif not os.path.exists(fonte_str) and fonte_str != "0":
+        print(f"[AVISO] Arquivo {fonte_str} não encontrado. Tentando webcam padrão (0)...")
         fonte = 0
+    else:
+        fonte = fonte_str
 
     nome_janela = "Semaforo Inteligente - Sistemas Distribuidos & Digitais"
 
