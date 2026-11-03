@@ -156,3 +156,8 @@ class ControladorSemaforoFSM:
         elif self.estado_atual == EstadoSemaforo.FAIL_SAFE:
             return (False, pisca, False, True, False)
         return (True, False, False, True, False)
+
+
+# Alias de compatibilidade
+MaquinaEstadosSemaforo = ControladorSemaforoFSM
+
