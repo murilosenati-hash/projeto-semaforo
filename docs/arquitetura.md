@@ -46,3 +46,28 @@ Saídas binárias: `(Carro_R, Carro_Y, Carro_G, Ped_R, Ped_G)` onde `CLK_PISCA` 
     - `POST /api/telemetria`: Recebe leituras de nós sensores HTTP/IoT.
     - `GET /api/status`: Retorna o estado completo da FSM, lâmpadas digitais e saúde dos nós.
 - **Tolerância a Falhas**: Cada nó possui janela de vida (`node_timeout = 6.0s`). Se todos os sensores perderem conexão por mais de `8.0s`, o controlador comuta automaticamente para `FAIL_SAFE`.
+
+---
+
+## 4. Calibração Dinâmica e Persistência de ROI (Region of Interest)
+
+### 4.1 Conceito e Motivação de Engenharia
+Em cenários reais de tráfego, câmeras sofrem vibrações estruturais ou necessitam de ajustes finos de enquadramento para ignorar calçadas, acostamentos, vagas de estacionamento ou vias secundárias. A calibração dinâmica resolve isso sem necessidade de recompilar código ou reiniciar processos.
+
+### 4.2 Fluxo Interativo de Calibração (Tecla `R`)
+1. **Acionamento**: Ao pressionar a tecla `R` durante a execução, o pipeline entra em modo de calibração interativa.
+2. **Demarcação Poligonal**: O usuário marca com o mouse os 4 vértices que delimitam a área útil da pista na imagem.
+3. **Normalização de Coordenadas**: As coordenadas em pixels são convertidas para o espaço normalizado $[0.0, 1.0]$:
+   $$x_{norm} = \frac{x_{pixel}}{W}, \quad y_{norm} = \frac{y_{pixel}}{H}$$
+   Isso garante invariância completa de resolução (Full HD, 720p ou resolução reduzida de inferência de 320x320).
+4. **Persistência Atômica (`roi_config.json`)**: A configuração é salva em disco via `salvar_roi()` em formato JSON:
+   ```json
+   [
+     [0.15, 0.30],
+     [0.85, 0.30],
+     [0.98, 0.98],
+     [0.02, 0.98]
+   ]
+   ```
+5. **Recarregamento Automático e Fallback**: Na inicialização do sistema ou nós distribuídos, `carregar_roi()` carrega o JSON configurado; se inexistente ou corrompido, aplica fallback gracioso para a `ROI_PADRAO`.
+6. **Filtragem Espacial Contínua**: O `DetectorTrafego.ponto_dentro_roi()` valida se o centro geométrico inferior do veículo/pedestre reside no polígono (`cv2.pointPolygonTest`), descartando falsos positivos fora da pista ativa.
