@@ -22,9 +22,7 @@ ROI_PADRAO = ROI_PADRAO_VEICULOS
 def iniciar_servidor_web_embutido(fsm, host: str = '0.0.0.0', port: int = 8080):
     """Inicia o servidor HTTP em background na mesma FSM para display web e telemetria."""
     controlador = ControladorDistribuido(fsm=fsm)
-    httpd = HTTPServer((host, port), criar_handler_http(controlador))
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
+    httpd = iniciar_servidor_http(controlador, host=host, port=port)
     logging.info(f"[WEB DISPLAY] Servidor ativo em http://{host}:{port}/ (sincronizado com FSM local)")
     print(f"[WEB DISPLAY] Display Web ativo em http://{host}:{port}/ e /display (sincronizado com FSM)")
     return httpd

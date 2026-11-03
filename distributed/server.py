@@ -736,11 +736,13 @@ def criar_handler_http(controlador: ControladorDistribuido):
 
 
 def iniciar_servidor_http(controlador: ControladorDistribuido, host: str = "0.0.0.0", port: int = 8080):
-    """Inicia o servidor HTTP para atender página web e API REST."""
+    """Inicia o servidor HTTP em background para atender página web e API REST."""
     handler = criar_handler_http(controlador)
     httpd = HTTPServer((host, port), handler)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
     logging.info(f"[SERVIDOR-HTTP] Servidor ativo em http://{host}:{port}/")
-    httpd.serve_forever()
+    return httpd
 
 
 def main():
@@ -761,10 +763,8 @@ def main():
     )
     t_socket.start()
 
-    # Thread para a API REST HTTP
-    httpd = HTTPServer((args.host, args.http_port), criar_handler_http(controlador))
-    t_http = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t_http.start()
+    # Servidor HTTP para display web e API REST
+    httpd = iniciar_servidor_http(controlador, args.host, args.http_port)
     logging.info(f"API REST HTTP escutando em http://{args.host}:{args.http_port}/api/status")
 
     ultimo_estado = None
