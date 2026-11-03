@@ -89,6 +89,11 @@ def selecionar_poligono_4_pontos(nome_janela, frame_base, roi_atual=None):
     Exibe Banner OSD no frame e validação de geometria convexa.
     """
     fh, fw = frame_base.shape[:2]
+    cv2.namedWindow(nome_janela, cv2.WINDOW_NORMAL)
+    largura_janela = min(1280, fw) if fw > 0 else 1024
+    altura_janela = int(largura_janela * (fh / fw)) if fw > 0 else 576
+    cv2.resizeWindow(nome_janela, largura_janela, altura_janela)
+
     pontos_clicados = []
     msg_status = ""
     status_cor = (0, 255, 255)
@@ -256,6 +261,7 @@ def main():
         fonte = fonte_str
 
     nome_janela = "Semaforo Inteligente - Sistemas Distribuidos & Digitais"
+    cv2.namedWindow(nome_janela, cv2.WINDOW_NORMAL)
 
     # Thread desacoplada de captura
     stream = ThreadedVideoStream(src=fonte).start()
@@ -286,6 +292,7 @@ def main():
     animal_manual = False
     inicio_manual = 0
     tempo_anterior = time.time()
+    janela_configurada = False
 
     print("=== SEMÁFORO INTELIGENTE ATIVO (OTIMIZADO) ===")
     print(f"[CONFIG] Resolução: {args.imgsz}x{args.imgsz} | Salto: {args.skip} frames | I/O Thread: Ativa")
@@ -307,6 +314,13 @@ def main():
         if not ret or frame is None:
             time.sleep(0.01)
             continue
+
+        if not janela_configurada:
+            h, w = frame.shape[:2]
+            largura_janela = min(1280, w) if w > 0 else 1024
+            altura_janela = int(largura_janela * (h / w)) if w > 0 else 576
+            cv2.resizeWindow(nome_janela, largura_janela, altura_janela)
+            janela_configurada = True
 
         # 1. Inferência YOLO para detectar pedestres/animais reais na cena física
         resultado = detector.processar_frame(frame, roi_normalizada=roi)
