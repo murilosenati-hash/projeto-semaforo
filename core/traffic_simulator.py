@@ -140,10 +140,14 @@ class SimuladorTrafegoVirtual:
     Simulador de tráfego AR determinístico com pista dupla (2 faixas paralelas),
     anti-colisão independente por faixa e suporte a múltiplos tipos de veículos.
     """
-    def __init__(self, taxa_spawn=3.5, stop_line=0.55, max_veiculos=6):
+    DECEL_MAX: float = 0.85
+
+    def __init__(self, taxa_spawn=3.5, stop_line=0.55, max_veiculos=6, comprimento_pista_m=50.0):
         self.taxa_spawn = float(taxa_spawn)
         self.stop_line = float(stop_line)
         self.max_veiculos = int(max_veiculos)
+        self.comprimento_pista_m = float(comprimento_pista_m)
+        self.DECEL_MAX = 0.85
         
         self.veiculos: list[VeiculoVirtual] = []
         self._proximo_id = 1
@@ -246,13 +250,13 @@ class SimuladorTrafegoVirtual:
                 return False
 
         if tipo == "caminhao":
-            comp = 0.14
+            comp = 10.0
             v_max = 0.16 + random.uniform(0.0, 0.03)
         elif tipo == "moto":
-            comp = 0.06
+            comp = 2.0
             v_max = 0.24 + random.uniform(0.0, 0.05)
         else:
-            comp = 0.09
+            comp = 4.5
             v_max = 0.19 + random.uniform(0.0, 0.04)
 
         novo = VeiculoVirtual(
@@ -288,6 +292,98 @@ class SimuladorTrafegoVirtual:
         self.modo_3d = not self.modo_3d
         return self.modo_3d
 
+    def _calcular_aceleracao(self, v: VeiculoVirtual, sinal_aberto: bool, v_frente: Optional[VeiculoVirtual] = None) -> float:
+        """
+        Calcula a aceleração do veículo via modelo de perseguição/IDM com unidades corretas:
+        - Fração normalizada (0.0 a 1.0) para coordenadas relativas da pista/ROI
+        - Metros (m) para distâncias físicas do modelo cinemático e margem de parada
+        """
+        comp_m = v.comprimento if v.comprimento > 1.0 else (v.comprimento * self.comprimento_pista_m)
+        comp_frac = comp_m / self.comprimento_pista_m
+        margem_m = 0.3  # 30cm antes da linha de retenção
+        limite_stop = self.stop_line - (comp_m * 0.5 + margem_m) / self.comprimento_pista_m
+
+        dist_obstaculo = float('inf')
+        vel_obstaculo = 0.0
+
+        if not sinal_aberto and v.posicao <= self.stop_line:
+            dist_ate_stop_m = (limite_stop - v.posicao) * self.comprimento_pista_m
+            if dist_ate_stop_m > 0:
+                dist_obstaculo = dist_ate_stop_m
+                vel_obstaculo = 0.0
+            else:
+                return -self.DECEL_MAX
+
+        if v_frente is not None:
+            vf_comp_m = v_frente.comprimento if v_frente.comprimento > 1.0 else (v_frente.comprimento * self.comprimento_pista_m)
+            dist_veiculo_m = (v_frente.posicao - v.posicao) * self.comprimento_pista_m - (vf_comp_m + comp_m) * 0.5
+            if dist_veiculo_m < dist_obstaculo:
+                dist_obstaculo = max(0.1, dist_veiculo_m)
+                vel_obstaculo = v_frente.velocidade
+
+        if dist_obstaculo == float('inf'):
+            if v.velocidade < v.velocidade_max:
+                return self.aceleracao
+            return 0.0
+
+        if dist_obstaculo <= margem_m:
+            return -self.DECEL_MAX
+
+        # Cálculo do modelo IDM em metros convertido para aceleração relativa
+        v_m = v.velocidade * self.comprimento_pista_m
+        vel_obs_m = vel_obstaculo * self.comprimento_pista_m
+        delta_v_m = v_m - vel_obs_m
+        s0_m = 2.0
+        T_s = 1.0
+        a_m = self.aceleracao * self.comprimento_pista_m
+        b_m = self.desaceleracao * self.comprimento_pista_m
+
+        termo_dinamico = (v_m * delta_v_m) / (2.0 * math.sqrt(max(0.01, a_m * b_m)))
+        s_star = s0_m + max(0.0, v_m * T_s + termo_dinamico)
+
+        ratio_vel = (v.velocidade / max(0.01, v.velocidade_max)) ** 4
+        ratio_dist = (s_star / max(0.1, dist_obstaculo)) ** 2
+        acel_idm_m = a_m * (1.0 - ratio_vel - ratio_dist)
+        acel_idm = acel_idm_m / self.comprimento_pista_m
+
+        return max(-self.DECEL_MAX, min(self.aceleracao, acel_idm))
+
+    def _atualizar_fisica(self, dt: float, sinal_aberto: bool):
+        """
+        Atualiza física dos veículos por faixa com verificação rígida da Stop Line.
+        """
+        for faixa_id in (0, 1):
+            veiculos_faixa = [v for v in self.veiculos if v.faixa == faixa_id]
+            veiculos_faixa.sort(key=lambda x: x.posicao, reverse=True)
+
+            for i, v in enumerate(veiculos_faixa):
+                v_frente = veiculos_faixa[i - 1] if i > 0 else None
+                acel = self._calcular_aceleracao(v, sinal_aberto, v_frente)
+
+                v.velocidade = max(0.0, min(v.velocidade_max, v.velocidade + acel * dt))
+                v.posicao += v.velocidade * dt
+
+                v_comp_m = v.comprimento if v.comprimento > 1.0 else (v.comprimento * self.comprimento_pista_m)
+                limite_stop = self.stop_line - (v_comp_m * 0.5 + 0.3) / self.comprimento_pista_m
+
+                if not sinal_aberto and v.posicao < self.stop_line and v.posicao > limite_stop:
+                    v.posicao = limite_stop
+                    v.velocidade = 0.0
+
+                if v_frente is not None:
+                    vf_comp_m = v_frente.comprimento if v_frente.comprimento > 1.0 else (v_frente.comprimento * self.comprimento_pista_m)
+                    limite_carro = v_frente.posicao - (vf_comp_m * 0.5 + v_comp_m * 0.5 + 1.0) / self.comprimento_pista_m
+                    if v.posicao > limite_carro and v_frente.posicao <= 1.0:
+                        v.posicao = min(v.posicao, limite_carro)
+                        if v.posicao <= limite_carro + 0.001:
+                            v.velocidade = min(v.velocidade, v_frente.velocidade)
+
+                if v.velocidade <= 0.002:
+                    v.velocidade = 0.0
+                    v.parado = True
+                else:
+                    v.parado = False
+
     def atualizar(self, dt: float, fsm_state=None, estado_fsm=None, estado_semaforo=None):
         """
         Atualiza cinemática 1D com anti-colisão estritamente independente por faixa.
@@ -296,7 +392,7 @@ class SimuladorTrafegoVirtual:
         if dt <= 0.0:
             return
 
-        estado_usado = fsm_state if fsm_state is not None else estado_semaforo
+        estado_usado = fsm_state if fsm_state is not None else (estado_fsm if estado_fsm is not None else estado_semaforo)
         estado_str = estado_usado.value if isinstance(estado_usado, EstadoSemaforo) else str(estado_usado)
         sinal_aberto = (estado_str == EstadoSemaforo.VERDE_CARRO.value)
 
@@ -306,45 +402,8 @@ class SimuladorTrafegoVirtual:
                 self.spawn_veiculo()
             self._tempo_desde_spawn = 0.0
 
-        # Processa anti-colisão e movimento de forma independente por faixa
-        for faixa_id in (0, 1):
-            veiculos_faixa = [v for v in self.veiculos if v.faixa == faixa_id]
-            veiculos_faixa.sort(key=lambda x: x.posicao, reverse=True)
-
-            for i, v in enumerate(veiculos_faixa):
-                limite_parada = 1.05
-
-                # Anti-colisão na fila apenas da mesma faixa
-                if i > 0:
-                    lider = veiculos_faixa[i - 1]
-                    limite_carro = lider.posicao - lider.comprimento - self.d_seguranca
-                    limite_parada = min(limite_parada, limite_carro)
-
-                # Parada na Stop Line com desconto da metade do comprimento (frente antes da faixa)
-                limite_stop = self.stop_line - (v.comprimento * 0.5)
-                if not sinal_aberto and v.posicao <= self.stop_line:
-                    limite_parada = min(limite_parada, limite_stop)
-
-                distancia_alvo = limite_parada - v.posicao
-
-                if distancia_alvo <= 0.005:
-                    v.posicao = min(v.posicao, limite_parada)
-                    v.velocidade = 0.0
-                    v.parado = True
-                elif distancia_alvo < 0.18 and (not sinal_aberto or (i > 0 and veiculos_faixa[i - 1].parado)):
-                    v.velocidade = max(0.0, v.velocidade - self.desaceleracao * dt)
-                    v.parado = (v.velocidade <= 0.002)
-                    if v.parado:
-                        v.velocidade = 0.0
-                else:
-                    v.velocidade = min(v.velocidade_max, v.velocidade + self.aceleracao * dt)
-                    v.parado = False
-
-                v.posicao += v.velocidade * dt
-                if v.posicao > limite_parada and limite_parada <= 1.0:
-                    v.posicao = limite_parada
-                    v.velocidade = 0.0
-                    v.parado = True
+        # Atualiza física dos veículos por faixa
+        self._atualizar_fisica(dt, sinal_aberto)
 
         self.veiculos = [v for v in self.veiculos if v.posicao < 1.0]
 
@@ -481,7 +540,8 @@ class SimuladorTrafegoVirtual:
         fator_faixa = 0.28 if v.faixa == 0 else 0.72
 
         # Posição longitudinal da frente e traseira do veículo
-        meio_comp = max(0.015, 0.5 * v.comprimento)
+        comp_m = v.comprimento if v.comprimento > 1.0 else (v.comprimento * self.comprimento_pista_m)
+        meio_comp = max(0.015, 0.5 * (comp_m / self.comprimento_pista_m))
         t_frente = min(1.0, t + meio_comp)
         t_tras = max(0.0, t - meio_comp)
 

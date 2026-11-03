@@ -127,3 +127,30 @@ def test_renderizacao_aspect_ratio_e_duas_faixas():
     res = sim.renderizar(frame.copy(), roi_pixels, estado_fsm=EstadoSemaforo.VERDE_CARRO)
     assert res.shape == (720, 1280, 3)
     assert not np.all(res == 40)
+
+
+def test_stop_line_precisao_parada_sem_invasao():
+    """
+    Testa precisão milimétrica na parada da stop line com margem de segurança de 30cm,
+    garantindo que veículos de diferentes portes (sedan 4.5m e caminhão 10m)
+    nunca invadam a linha de retenção com o parachoque dianteiro.
+    """
+    sim = SimuladorTrafegoVirtual(taxa_spawn=100.0, stop_line=0.55, comprimento_pista_m=50.0)
+    v_carro = VeiculoVirtual(id=1, posicao=0.40, velocidade=0.15, velocidade_max=0.20,
+                             comprimento=4.5, cor=(200, 50, 50), parado=False, faixa=0, tipo="carro")
+    v_caminhao = VeiculoVirtual(id=2, posicao=0.35, velocidade=0.12, velocidade_max=0.16,
+                                comprimento=10.0, cor=(50, 100, 200), parado=False, faixa=1, tipo="caminhao")
+    sim.veiculos.extend([v_carro, v_caminhao])
+
+    for _ in range(80):
+        sim.atualizar(dt=0.1, fsm_state=EstadoSemaforo.VERMELHO_LIMPEZA)
+
+    assert v_carro.parado is True
+    assert v_carro.velocidade == 0.0
+    parachoque_carro = v_carro.posicao + (v_carro.comprimento * 0.5) / sim.comprimento_pista_m
+    assert parachoque_carro <= sim.stop_line - (0.3 / sim.comprimento_pista_m) + 0.001
+
+    assert v_caminhao.parado is True
+    assert v_caminhao.velocidade == 0.0
+    parachoque_caminhao = v_caminhao.posicao + (v_caminhao.comprimento * 0.5) / sim.comprimento_pista_m
+    assert parachoque_caminhao <= sim.stop_line - (0.3 / sim.comprimento_pista_m) + 0.001
