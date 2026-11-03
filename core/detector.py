@@ -12,12 +12,11 @@ CLASSES_VEICULOS = {
     7: "Caminhao"
 }
 CLASSES_ANIMAIS = {
-    14: "Passaro",
-    15: "Gato",
-    16: "Cachorro",
-    17: "Cavalo",
-    18: "Ovelha",
-    19: "Vaca"
+    15: 'gato',
+    16: 'cachorro',
+    17: 'cavalo',
+    18: 'ovelha',
+    19: 'vaca'
 }
 
 

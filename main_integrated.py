@@ -270,10 +270,10 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None, tipo="vei
 selecionar_poligono_4_pontos = selecionar_poligono_livre
 
 
-def desenhar_painel_semaforo(frame, fsm, ar_ativo=False, modo_3d=False, debounce_info=None):
+def desenhar_painel_semaforo(frame, fsm, ar_ativo=False, modo_3d=False, debounce_info=None, usar_ponto_contato=True):
     """
     Desenha um semáforo virtual digital no canto do frame com luzes realistas
-    e telemetria da FSM com feedback de debounce de pedestres.
+    e telemetria da FSM com feedback de debounce de pedestres e modo de detecção.
     """
     h, w = frame.shape[:2]
     luz_carro_r, luz_carro_y, luz_carro_g, luz_ped_r, luz_ped_g = fsm.obter_luzes()
@@ -305,26 +305,29 @@ def desenhar_painel_semaforo(frame, fsm, ar_ativo=False, modo_3d=False, debounce
 
     # HUD Superior com Estado e Telemetria
     tempo_no_estado = time.time() - fsm.inicio_estado
-    cv2.rectangle(frame, (20, 20), (520, 170), (0, 0, 0), -1)
-    cv2.rectangle(frame, (20, 20), (520, 170), (0, 255, 255), 2)
+    cv2.rectangle(frame, (20, 20), (520, 175), (0, 0, 0), -1)
+    cv2.rectangle(frame, (20, 20), (520, 175), (0, 255, 255), 2)
 
     tag_ar = " [AR 3D]" if (ar_ativo and modo_3d) else (" [AR 2D]" if ar_ativo else "")
-    cv2.putText(frame, f"ESTADO: {fsm.estado_atual.value}{tag_ar}", (35, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-    cv2.putText(frame, f"TEMPO NO ESTADO: {tempo_no_estado:.1f}s / Meta: {fsm.tempo_verde_calculado:.0f}s", (35, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1)
-    cv2.putText(frame, f"SENSORES: {fsm.veiculos_detectados} Veic | {fsm.pedestres_detectados} Ped | {fsm.animais_detectados} Animal", (35, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 1)
-    cv2.putText(frame, "TECLAS: [P] Ped | [A] Anim | [R] Pista | [E] Zonas Ped | [V] AR | [M] 3D", (35, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+    tag_modo = " [PONTO CONTATO (SOLO)]" if usar_ponto_contato else " [CENTROIDE]"
+    cor_tag_modo = (0, 255, 0) if usar_ponto_contato else (0, 215, 255)
+    cv2.putText(frame, f"ESTADO: {fsm.estado_atual.value}{tag_ar}", (35, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 255, 255), 2)
+    cv2.putText(frame, f"MODO DETECCAO: {tag_modo}", (35, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.45, cor_tag_modo, 1)
+    cv2.putText(frame, f"TEMPO NO ESTADO: {tempo_no_estado:.1f}s / Meta: {fsm.tempo_verde_calculado:.0f}s", (35, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 255, 255), 1)
+    cv2.putText(frame, f"SENSORES: {fsm.veiculos_detectados} Veic | {fsm.pedestres_detectados} Ped | {fsm.animais_detectados} Animal", (35, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 0), 1)
+    cv2.putText(frame, "TECLAS: [C] Modo Solo/Centróide | [P] Ped | [A] Anim | [R] Pista | [E] Zonas Ped | [V] AR | [M] 3D", (35, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.33, (200, 200, 200), 1)
 
     # Linha de Feedback de Debounce de Pedestre
     if debounce_info is not None:
         confirmado, t_acumulado, progresso = debounce_info
         if confirmado:
-            cv2.putText(frame, "[PEDESTRE CONFIRMADO] -> FSM ACIONADA", (35, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 0), 2)
+            cv2.putText(frame, "[PEDESTRE CONFIRMADO] -> FSM ACIONADA", (35, 158), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 0), 2)
         elif t_acumulado > 0.0:
             num_barras = int(progresso * 8)
             barra_txt = "[" + "|" * num_barras + " " * (8 - num_barras) + "]"
-            cv2.putText(frame, f"PEDESTRE AGUARDANDO: {barra_txt} {t_acumulado:.1f}s / 1.5s", (35, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 2)
+            cv2.putText(frame, f"PEDESTRE AGUARDANDO: {barra_txt} {t_acumulado:.1f}s / 1.5s", (35, 158), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2)
         else:
-            cv2.putText(frame, "ZONA PEDESTRES: Livre (Aguardando na calçada)", (35, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 160, 160), 1)
+            cv2.putText(frame, "ZONA PEDESTRES: Livre (Aguardando na calçada)", (35, 158), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (160, 160, 160), 1)
 
 
 def main():
@@ -339,6 +342,7 @@ def main():
     parser.add_argument("--web-port", type=int, default=8080, help="Porta do display web embutido (padrão: 8080)")
     parser.add_argument("--web-host", default="0.0.0.0", help="Host de bind do display web (padrão: 0.0.0.0)")
     parser.add_argument("--sem-web", action="store_true", help="Desativa o servidor web embutido")
+    parser.add_argument("--modo-centroide", action="store_true", help="Usa centróide em vez do ponto de contato com o solo para detecção")
     args = parser.parse_args()
 
     fonte_str = str(args.source).strip()
@@ -359,7 +363,14 @@ def main():
     stream = ThreadedVideoStream(src=fonte).start()
     time.sleep(0.3)
 
-    detector = DetectorTrafego(model_path=args.yolo, confianca=0.35, pular_frames=args.skip, imgsz=args.imgsz)
+    usar_ponto_contato = not args.modo_centroide
+    detector = DetectorTrafego(
+        model_path=args.yolo,
+        confianca=0.35,
+        pular_frames=args.skip,
+        imgsz=args.imgsz,
+        usar_ponto_contato=usar_ponto_contato
+    )
     fsm = ControladorSemaforoFSM(
         min_verde_carro=6.0,
         max_verde_carro=25.0,
@@ -493,7 +504,8 @@ def main():
             fsm,
             ar_ativo=ar_ativo,
             modo_3d=simulador_ar.modo_3d,
-            debounce_info=(ped_confirmado, t_acumulado, progresso_aguard)
+            debounce_info=(ped_confirmado, t_acumulado, progresso_aguard),
+            usar_ponto_contato=detector.usar_ponto_contato
         )
 
         cv2.imshow(nome_janela, frame_anotado)
@@ -516,6 +528,10 @@ def main():
             modo_3d_ativo = simulador_ar.alternar_modo_3d()
             print(f"[MODO AR] Modo 3D Wireframe / Solid AR: {'LIGADO' if modo_3d_ativo else 'DESLIGADO (2D Sprites)'}")
         elif key == ord('c') or key == ord('C'):
+            detector.usar_ponto_contato = not detector.usar_ponto_contato
+            modo_nome = "[PONTO CONTATO (SOLO)]" if detector.usar_ponto_contato else "[CENTROIDE]"
+            print(f"[MODO DETECCAO] Alternado para: {modo_nome}")
+        elif key == ord('s') or key == ord('S'):
             if ar_ativo:
                 spawnow = simulador_ar.spawn_imediato()
                 print(f"[MODO AR] Spawn manual de veículo virtual: {'Sucesso' if spawnow else 'Pista ocupada ou limite atingido'}")

@@ -5,7 +5,14 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core.detector import DetectorTrafego, DebouncePedestre, CLASSE_PESSOA, CLASSES_VEICULOS
+from core.detector import (
+    DetectorTrafego,
+    DebouncePedestre,
+    CLASSE_PESSOA,
+    CLASSES_VEICULOS,
+    CLASSES_ANIMAIS,
+    CLASSES_ALVO
+)
 
 
 def test_debounce_pedestre_permanencia():
@@ -85,6 +92,7 @@ def test_detector_ponto_contato_pes_pessoa():
     detector.imgsz = 320
     detector.pular_frames = 1
     detector.frame_count = 0
+    detector.usar_ponto_contato = True
     detector.ultimo_resultado = None
     detector.classes_alvo = [0, 1, 2, 3, 5, 7]
 
@@ -115,6 +123,76 @@ def test_detector_ponto_contato_pes_pessoa():
     roi_ped_cobre_tronco = [[0.25, 0.25], [0.75, 0.25], [0.75, 0.55], [0.25, 0.55]]
     res_b = detector.processar_frame(frame.copy(), roi_pedestres_normalizada=roi_ped_cobre_tronco)
     assert res_b['pedestres'] == 0
+
+
+def test_detector_exclusao_passaros():
+    """
+    Garante que a classe de pássaro (ID 14) foi completamente removida de CLASSES_ANIMAIS
+    e de CLASSES_ALVO para evitar que pássaros em fios ou voando acionem o semáforo.
+    Apenas animais terrestres (15: gato, 16: cachorro, 17: cavalo, 18: ovelha, 19: vaca) são considerados.
+    """
+    assert 14 not in CLASSES_ANIMAIS
+    assert 14 not in CLASSES_ALVO
+    assert 15 in CLASSES_ANIMAIS  # gato
+    assert 16 in CLASSES_ANIMAIS  # cachorro
+    assert 17 in CLASSES_ANIMAIS  # cavalo
+    assert 18 in CLASSES_ANIMAIS  # ovelha
+    assert 19 in CLASSES_ANIMAIS  # vaca
+
+
+def test_detector_ponto_contato_rodas_veiculo_e_patas_animal():
+    """
+    Valida a detecção pelo ponto de contato com o solo: 
+    - Rodas para veículos ((x1+x2)//2, y2)
+    - Patas para animais ((x1+x2)//2, y2)
+    - Alternância para centróide quando usar_ponto_contato=False.
+    """
+    detector = DetectorTrafego.__new__(DetectorTrafego)
+    detector.confianca = 0.35
+    detector.imgsz = 320
+    detector.pular_frames = 1
+    detector.frame_count = 0
+    detector.usar_ponto_contato = True
+    detector.ultimo_resultado = None
+    detector.classes_alvo = CLASSES_ALVO
+
+    # Carro (cls=2) de y1=100 a y2=300, centro y=200, rodas y=300
+    box_carro = MagicMock()
+    box_carro.cls = [2]
+    box_carro.xyxy = [np.array([100, 100, 200, 300])]
+    box_carro.id = [1]
+
+    # Cachorro (cls=16) de y1=100 a y2=300, centro y=200, patas y=300
+    box_animal = MagicMock()
+    box_animal.cls = [16]
+    box_animal.xyxy = [np.array([250, 100, 350, 300])]
+    box_animal.id = [2]
+
+    mock_res = MagicMock()
+    mock_res.boxes = [box_carro, box_animal]
+
+    mock_model = MagicMock()
+    mock_model.track.return_value = [mock_res]
+    detector.model = mock_model
+
+    frame = np.zeros((400, 400, 3), dtype=np.uint8)
+
+    # ROI cobre a pista no solo: y=[250, 350] (y=300 está DENTRO da pista, mas centro y=200 está FORA)
+    roi_solo = [[0.10, 0.60], [0.90, 0.60], [0.90, 0.90], [0.10, 0.90]]
+
+    # 1. Modo Ponto de Contato (Solo): Rodas e Patas (y=300) dentro da ROI -> Ambos detectados
+    detector.usar_ponto_contato = True
+    res_solo = detector.processar_frame(frame.copy(), roi_veiculos_normalizada=roi_solo)
+    assert res_solo['veiculos'] == 1
+    assert res_solo['animais'] == 1
+    assert res_solo['detalhes'][0]['ponto_teste'] == (150, 300)
+    assert res_solo['detalhes'][1]['ponto_teste'] == (300, 300)
+
+    # 2. Modo Centróide: Centro (y=200) fora da ROI -> Nenhum detectado
+    detector.usar_ponto_contato = False
+    res_centro = detector.processar_frame(frame.copy(), roi_veiculos_normalizada=roi_solo)
+    assert res_centro['veiculos'] == 0
+    assert res_centro['animais'] == 0
 
 
 def pytest_approx(val, expected, tol=1e-3):
