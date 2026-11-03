@@ -162,7 +162,23 @@ class SimuladorTrafegoVirtual:
             (80, 220, 120),  # Verde elétrico
         ]
         self._sprite_cache = {}
+        self.sprites_veiculos: Dict[str, np.ndarray] = {}
+        self._carregar_pack_assets_disco()
         self._garantir_asset_padrao()
+
+    def _carregar_pack_assets_disco(self):
+        """Carrega todos os assets PNG do disco no dicionário self.sprites_veiculos."""
+        nomes_assets = [
+            "car_sedan.png", "car_hatch.png", "car_sports.png", "taxi.png",
+            "police.png", "ambulance.png", "bus.png", "truck.png",
+            "truck_long.png", "van.png", "motorcycle.png", "car_top.png"
+        ]
+        for nome in nomes_assets:
+            img = self._carregar_asset_se_existir(nome)
+            if img is not None:
+                chave_nome = os.path.splitext(nome)[0]
+                self.sprites_veiculos[chave_nome] = img
+                self.sprites_veiculos[nome] = img
 
     def _garantir_asset_padrao(self):
         caminho_asset = os.path.join(ASSETS_DIR, 'car_top.png')
@@ -182,25 +198,26 @@ class SimuladorTrafegoVirtual:
     def _obter_sprite(self, cor: tuple, parado: bool, tipo: str = "carro") -> np.ndarray:
         chave = (cor, parado, tipo)
         if chave not in self._sprite_cache:
-            # Mapeia tipos para os novos assets PNG entregues em assets/
             mapa_assets = {
-                "carro": ["car_sedan.png", "car_hatch.png", "car_sports.png", "taxi.png"],
-                "caminhao": ["truck.png", "bus.png", "truck_long.png"],
-                "moto": ["motorcycle.png"],
-                "van": ["van.png"],
-                "servico": ["police.png", "ambulance.png"]
+                "carro": ["car_sedan", "car_hatch", "car_sports", "taxi"],
+                "caminhao": ["truck", "bus", "truck_long"],
+                "moto": ["motorcycle"],
+                "van": ["van"],
+                "servico": ["police", "ambulance"]
             }
             
-            sprite_carregado = None
-            arquivos = mapa_assets.get(tipo, mapa_assets["carro"])
-            # Escolhe deterministicamente pelo hash da cor
-            arquivo_alvo = arquivos[abs(hash(cor)) % len(arquivos)]
-            sprite_carregado = self._carregar_asset_se_existir(arquivo_alvo)
+            nomes = mapa_assets.get(tipo, mapa_assets["carro"])
+            nome_escolhido = nomes[abs(hash(cor)) % len(nomes)]
+            
+            # 1. Tenta obter do dicionário de sprites carregados do disco
+            sprite_disco = self.sprites_veiculos.get(nome_escolhido)
+            if sprite_disco is None:
+                sprite_disco = self._carregar_asset_se_existir(f"{nome_escolhido}.png")
 
-            if sprite_carregado is not None:
-                self._sprite_cache[chave] = sprite_carregado
+            if sprite_disco is not None:
+                self._sprite_cache[chave] = sprite_disco
             else:
-                # Fallback procedural se o arquivo não existir
+                # 2. Fallback procedural caso o asset não exista no disco
                 if tipo == "caminhao":
                     self._sprite_cache[chave] = gerar_sprite_veiculo(130, 310, cor_bgr=cor, parado=parado, tipo="caminhao")
                 elif tipo == "moto":
