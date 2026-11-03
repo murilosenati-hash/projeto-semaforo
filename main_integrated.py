@@ -18,8 +18,9 @@ ROI_PADRAO = ROI_PADRAO_VEICULOS
 def carregar_rois(caminho=None) -> dict:
     """
     Carrega as ROIs poligonais independentes de veículos e pedestres do arquivo JSON.
-    Garante retrocompatibilidade total: se o arquivo contiver apenas uma lista,
-    trata como ROI de veículos e preenche pedestres com o layout padrão.
+    Garante retrocompatibilidade total:
+    - Se o arquivo contiver apenas uma lista, trata como ROI de veículos e preenche pedestres com padrão.
+    - Suporta lista simples de pontos [ponto1, ponto2, ...] ou lista de polígonos [[p1, ...], [p2, ...]].
     """
     if caminho is None:
         caminho = CONFIG_ROI_PATH
@@ -37,7 +38,17 @@ def carregar_rois(caminho=None) -> dict:
                     if "veiculos" in dados and isinstance(dados["veiculos"], list):
                         rois["veiculos"] = [[float(p[0]), float(p[1])] for p in dados["veiculos"]]
                     if "pedestres" in dados and isinstance(dados["pedestres"], list):
-                        rois["pedestres"] = [[float(p[0]), float(p[1])] for p in dados["pedestres"]]
+                        raw_ped = dados["pedestres"]
+                        if len(raw_ped) > 0:
+                            # Se for lista de polígonos: [[[x, y], ...], [[x, y], ...]]
+                            if isinstance(raw_ped[0], (list, tuple)) and len(raw_ped[0]) > 0 and isinstance(raw_ped[0][0], (list, tuple, np.ndarray)):
+                                rois["pedestres"] = [
+                                    [[float(p[0]), float(p[1])] for p in poly]
+                                    for poly in raw_ped if isinstance(poly, (list, tuple)) and len(poly) >= 3
+                                ]
+                            else:
+                                # Lista simples de pontos [ponto1, ponto2, ...]
+                                rois["pedestres"] = [[float(p[0]), float(p[1])] for p in raw_ped]
                 elif isinstance(dados, list):
                     # Formato legado (apenas lista de veículos)
                     rois["veiculos"] = [[float(p[0]), float(p[1])] for p in dados]
@@ -66,12 +77,25 @@ def salvar_rois(rois: dict, caminho=None) -> bool:
         return False
 
 
-def salvar_roi(roi, caminho=None, tipo="veiculos") -> bool:
+def salvar_roi(roi, caminho=None, tipo="veiculos", index=None) -> bool:
     """Atualiza e salva uma ROI específica ('veiculos' ou 'pedestres')."""
     if caminho is None:
         caminho = CONFIG_ROI_PATH
     rois = carregar_rois(caminho=caminho)
-    rois[tipo] = roi
+    if tipo == "pedestres":
+        if index is not None:
+            # Se for formato de lista de zonas
+            if isinstance(rois["pedestres"], list) and len(rois["pedestres"]) > 0 and isinstance(rois["pedestres"][0], list) and len(rois["pedestres"][0]) > 0 and isinstance(rois["pedestres"][0][0], (list, tuple, np.ndarray)):
+                if index < len(rois["pedestres"]):
+                    rois["pedestres"][index] = roi
+                else:
+                    rois["pedestres"].append(roi)
+            else:
+                rois["pedestres"] = [roi]
+        else:
+            rois["pedestres"] = roi
+    else:
+        rois[tipo] = roi
     return salvar_rois(rois, caminho=caminho)
 
 
@@ -116,7 +140,7 @@ def normalizar_pontos_roi(pts, fw, fh):
     ]
 
 
-def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None, tipo="veiculos"):
+def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None, tipo="veiculos", titulo_personalizado=None):
     """
     Seletor interativo de polígono livre de N vértices (N >= 3) para calibração de ROI.
     ENTER ou ESPAÇO finaliza e valida a geometria (área >= 500 px e convexidade).
@@ -128,12 +152,12 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None, tipo="vei
     altura_janela = int(largura_janela * (fh / fw)) if fw > 0 else 576
     cv2.resizeWindow(nome_janela, largura_janela, altura_janela)
 
-    if tipo == "pedestres":
-        titulo_base = "CALIBRANDO ZONA DE PEDESTRES (ESPERA/FAIXA)"
+    if tipo.startswith("pedestres"):
+        titulo_base = titulo_personalizado if titulo_personalizado else "CALIBRANDO ZONA DE PEDESTRES (ESPERA/FAIXA)"
         cor_tema = (255, 255, 0)      # Ciano
         cor_preenchimento = (255, 200, 0)
     else:
-        titulo_base = "CALIBRANDO PISTA DE VEICULOS (ROI PRINCIPAL)"
+        titulo_base = titulo_personalizado if titulo_personalizado else "CALIBRANDO PISTA DE VEICULOS (ROI PRINCIPAL)"
         cor_tema = (0, 215, 255)      # Amarelo/Laranja
         cor_preenchimento = (0, 220, 100)
 
@@ -232,7 +256,7 @@ def selecionar_poligono_livre(nome_janela, frame_base, roi_atual=None, tipo="vei
 selecionar_poligono_4_pontos = selecionar_poligono_livre
 
 
-def desenhar_painel_semaforo(frame, fsm, ar_ativo=False, debounce_info=None):
+def desenhar_painel_semaforo(frame, fsm, ar_ativo=False, modo_3d=False, debounce_info=None):
     """
     Desenha um semáforo virtual digital no canto do frame com luzes realistas
     e telemetria da FSM com feedback de debounce de pedestres.
@@ -270,11 +294,11 @@ def desenhar_painel_semaforo(frame, fsm, ar_ativo=False, debounce_info=None):
     cv2.rectangle(frame, (20, 20), (520, 170), (0, 0, 0), -1)
     cv2.rectangle(frame, (20, 20), (520, 170), (0, 255, 255), 2)
 
-    tag_ar = " [AR ATIVO]" if ar_ativo else ""
+    tag_ar = " [AR 3D]" if (ar_ativo and modo_3d) else (" [AR 2D]" if ar_ativo else "")
     cv2.putText(frame, f"ESTADO: {fsm.estado_atual.value}{tag_ar}", (35, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
     cv2.putText(frame, f"TEMPO NO ESTADO: {tempo_no_estado:.1f}s / Meta: {fsm.tempo_verde_calculado:.0f}s", (35, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1)
     cv2.putText(frame, f"SENSORES: {fsm.veiculos_detectados} Veic | {fsm.pedestres_detectados} Ped | {fsm.animais_detectados} Animal", (35, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 1)
-    cv2.putText(frame, "TECLAS: [P] Ped | [A] Anim | [R] ROI Pista | [E] ROI Pedestres | [V] AR", (35, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
+    cv2.putText(frame, "TECLAS: [P] Ped | [A] Anim | [R] Pista | [E] Zonas Ped | [V] AR | [M] 3D", (35, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
 
     # Linha de Feedback de Debounce de Pedestre
     if debounce_info is not None:
@@ -418,26 +442,33 @@ def main():
         if ar_ativo:
             simulador_ar.renderizar(frame_anotado, roi_px_veic, fsm.estado_atual)
 
-        # 3.2 Zona de Espera de Pedestres (Ciano quando livre, Verde vivo se detectado/confirmado)
-        roi_px_ped = DetectorTrafego.roi_para_pixels(rois["pedestres"], frame.shape)
-        if len(roi_px_ped) >= 3:
-            cor_ped = (0, 255, 0) if (ped_confirmado or pedestre_zona) else (255, 255, 0)
-            overlay_ped = frame_anotado.copy()
-            cv2.fillPoly(overlay_ped, [roi_px_ped], cor_ped)
-            alfa_ped = 0.40 if (ped_confirmado or pedestre_zona) else 0.20
-            cv2.addWeighted(overlay_ped, alfa_ped, frame_anotado, 1.0 - alfa_ped, 0, frame_anotado)
-            cv2.polylines(frame_anotado, [roi_px_ped], True, cor_ped, 2)
-            
-            p_topo_p = roi_px_ped[0]
-            label_ped = "[PEDESTRE CONFIRMADO]" if ped_confirmado else ("[AGUARDANDO FAIXA]" if pedestre_zona else "[ZONA PEDESTRES]")
-            cv2.putText(frame_anotado, label_ped, (p_topo_p[0] + 5, max(20, p_topo_p[1] - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, cor_ped, 1, cv2.LINE_AA)
+        # 3.2 Zonas de Espera de Pedestres (Ciano quando livre, Verde vivo se detectado/confirmado)
+        rois_ped = rois.get("pedestres", [])
+        if rois_ped and isinstance(rois_ped[0], list) and len(rois_ped[0]) > 0 and isinstance(rois_ped[0][0], (int, float)):
+            rois_ped = [rois_ped]
 
-        # 3.3 HUD Semáforo com Debounce Info
+        for idx_z, ped_norm in enumerate(rois_ped):
+            roi_px_ped = DetectorTrafego.roi_para_pixels(ped_norm, frame.shape)
+            if roi_px_ped is not None and len(roi_px_ped) >= 3:
+                cor_ped = (0, 255, 0) if (ped_confirmado or pedestre_zona) else (255, 255, 0)
+                overlay_ped = frame_anotado.copy()
+                cv2.fillPoly(overlay_ped, [roi_px_ped], cor_ped)
+                alfa_ped = 0.40 if (ped_confirmado or pedestre_zona) else 0.20
+                cv2.addWeighted(overlay_ped, alfa_ped, frame_anotado, 1.0 - alfa_ped, 0, frame_anotado)
+                cv2.polylines(frame_anotado, [roi_px_ped], True, cor_ped, 2)
+                
+                p_topo_p = roi_px_ped[0]
+                label_base = f"ZONA {idx_z + 1}"
+                label_ped = f"[{label_base}: CONFIRMADO]" if ped_confirmado else (f"[{label_base}: AGUARDANDO]" if pedestre_zona else f"[{label_base}: PEDESTRES]")
+                cv2.putText(frame_anotado, label_ped, (p_topo_p[0] + 5, max(20, p_topo_p[1] - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, cor_ped, 1, cv2.LINE_AA)
+
+        # 3.3 HUD Semáforo com Debounce Info e Modo 3D
         desenhar_painel_semaforo(
             frame_anotado,
             fsm,
             ar_ativo=ar_ativo,
+            modo_3d=simulador_ar.modo_3d,
             debounce_info=(ped_confirmado, t_acumulado, progresso_aguard)
         )
 
@@ -457,6 +488,9 @@ def main():
         elif key == ord('v') or key == ord('V'):
             ar_ativo = not ar_ativo
             print(f"[MODO AR] Simulação de veículos AR: {'LIGADA' if ar_ativo else 'DESLIGADA'}")
+        elif key == ord('m') or key == ord('M'):
+            modo_3d_ativo = simulador_ar.alternar_modo_3d()
+            print(f"[MODO AR] Modo 3D Wireframe / Solid AR: {'LIGADO' if modo_3d_ativo else 'DESLIGADO (2D Sprites)'}")
         elif key == ord('c') or key == ord('C'):
             if ar_ativo:
                 spawnow = simulador_ar.spawn_imediato()
@@ -478,12 +512,49 @@ def main():
         elif key == ord('e') or key == ord('E'):
             frame_congelado = frame.copy()
             t0 = time.time()
-            nova_roi_p = selecionar_poligono_livre(nome_janela, frame_congelado, roi_atual=rois["pedestres"], tipo="pedestres")
+            zonas_ped = rois.get("pedestres", [])
+            if zonas_ped and isinstance(zonas_ped[0], list) and len(zonas_ped[0]) > 0 and isinstance(zonas_ped[0][0], (int, float)):
+                zonas_ped = [zonas_ped]
+            
+            overlay_sel = frame_congelado.copy()
+            cv2.rectangle(overlay_sel, (0, 0), (frame_congelado.shape[1], 75), (20, 20, 20), -1)
+            cv2.addWeighted(overlay_sel, 0.85, frame_congelado, 0.15, 0, frame_congelado)
+            texto_menu = f"CALIBRAR PEDESTRES: [1] Zona 1 (Esq) | [2] Zona 2 (Dir) | [+] Nova Zona ({len(zonas_ped)+1}) | [ESC] Cancelar"
+            cv2.putText(frame_congelado, texto_menu, (20, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 255), 2)
+            cv2.imshow(nome_janela, frame_congelado)
+            
+            sub_key = cv2.waitKey(0) & 0xFF
+            idx_calibrar = None
+            if sub_key == ord('1'):
+                idx_calibrar = 0
+            elif sub_key == ord('2'):
+                idx_calibrar = 1
+            elif sub_key in (ord('+'), ord('='), ord('a'), ord('A'), ord('n'), ord('N')):
+                idx_calibrar = len(zonas_ped)
+            elif sub_key == 27:
+                idx_calibrar = None
+            else:
+                idx_calibrar = 0
+            
+            if idx_calibrar is not None:
+                roi_atual = zonas_ped[idx_calibrar] if idx_calibrar < len(zonas_ped) else None
+                label_nome = "ESQUERDA" if idx_calibrar == 0 else ("DIREITA" if idx_calibrar == 1 else f"ZONA {idx_calibrar+1}")
+                nova_roi_p = selecionar_poligono_livre(
+                    nome_janela,
+                    frame.copy(),
+                    roi_atual=roi_atual,
+                    tipo="pedestres",
+                    titulo_personalizado=f"CALIBRANDO ZONA DE PEDESTRES {idx_calibrar + 1} ({label_nome})"
+                )
+                if nova_roi_p is not None:
+                    if idx_calibrar < len(zonas_ped):
+                        zonas_ped[idx_calibrar] = nova_roi_p
+                    else:
+                        zonas_ped.append(nova_roi_p)
+                    rois["pedestres"] = zonas_ped
+                    salvar_rois(rois)
             fsm.inicio_estado += (time.time() - t0)
             tempo_anterior = time.time()
-            if nova_roi_p is not None:
-                rois["pedestres"] = nova_roi_p
-                salvar_rois(rois)
 
     stream.stop()
     cv2.destroyAllWindows()

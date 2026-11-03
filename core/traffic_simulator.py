@@ -161,6 +161,7 @@ class SimuladorTrafegoVirtual:
             (180, 180, 180), # Prata executivo
             (80, 220, 120),  # Verde elétrico
         ]
+        self.modo_3d: bool = False
         self._sprite_cache = {}
         self.sprites_veiculos: Dict[str, np.ndarray] = {}
         self._carregar_pack_assets_disco()
@@ -282,7 +283,12 @@ class SimuladorTrafegoVirtual:
         """Retorna veículos ativos antes da stop line."""
         return len([v for v in self.veiculos if v.posicao <= self.stop_line])
 
-    def atualizar(self, dt: float, fsm_state=None, estado_semaforo=None):
+    def alternar_modo_3d(self) -> bool:
+        """Alterna entre o modo 2D Sprites e o modo 3D Wireframe / Solid AR."""
+        self.modo_3d = not self.modo_3d
+        return self.modo_3d
+
+    def atualizar(self, dt: float, fsm_state=None, estado_fsm=None, estado_semaforo=None):
         """
         Atualiza cinemática 1D com anti-colisão estritamente independente por faixa.
         Aceita fsm_state ou estado_semaforo para retrocompatibilidade total.
@@ -314,9 +320,10 @@ class SimuladorTrafegoVirtual:
                     limite_carro = lider.posicao - lider.comprimento - self.d_seguranca
                     limite_parada = min(limite_parada, limite_carro)
 
-                # Parada na Stop Line
-                if not sinal_aberto and v.posicao <= self.stop_line:
-                    limite_parada = min(limite_parada, self.stop_line)
+                # Parada na Stop Line com desconto da metade do comprimento (frente antes da faixa)
+                limite_stop = self.stop_line - (v.comprimento * 0.5)
+                if not sinal_aberto and v.posicao <= limite_stop:
+                    limite_parada = min(limite_parada, limite_stop)
 
                 distancia_alvo = limite_parada - v.posicao
 
@@ -400,6 +407,10 @@ class SimuladorTrafegoVirtual:
         # 3. Renderiza Veículos ordenados por profundidade
         for v in sorted(self.veiculos, key=lambda x: x.posicao):
             t = min(max(float(v.posicao), 0.0), 1.0)
+            if self.modo_3d:
+                self._renderizar_veiculo_3d(frame, v, t, p0, p1, p2, p3, h_frame, w_frame)
+                continue
+
             pt_esq, pt_dir = self._interpolar_ponto_roi(t, p0, p1, p2, p3)
             
             # Posição lateral por faixa (Faixa 0: 25% da via, Faixa 1: 75% da via)
@@ -460,3 +471,112 @@ class SimuladorTrafegoVirtual:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.30, (255, 255, 255), 1, cv2.LINE_AA)
 
         return frame
+
+    def _renderizar_veiculo_3d(self, frame: np.ndarray, v: VeiculoVirtual, t: float, p0, p1, p2, p3, h_frame: int, w_frame: int):
+        """
+        Renderiza o veículo no Modo 3D Wireframe / Solid AR:
+        Projeta paralelepípedo 3D (chassis inferior no solo + teto elevado em Z/Y normal negativo),
+        faces translúcidas, contornos neon e faróis 3D com iluminação no solo.
+        """
+        fator_faixa = 0.28 if v.faixa == 0 else 0.72
+
+        # Posição longitudinal da frente e traseira do veículo
+        meio_comp = max(0.015, 0.5 * v.comprimento)
+        t_frente = min(1.0, t + meio_comp)
+        t_tras = max(0.0, t - meio_comp)
+
+        pt_esq_f, pt_dir_f = self._interpolar_ponto_roi(t_frente, p0, p1, p2, p3)
+        pt_esq_t, pt_dir_t = self._interpolar_ponto_roi(t_tras, p0, p1, p2, p3)
+
+        p_frente = (1.0 - fator_faixa) * pt_esq_f + fator_faixa * pt_dir_f
+        p_tras = (1.0 - fator_faixa) * pt_esq_t + fator_faixa * pt_dir_t
+
+        # Vetor lateral da pista para dimensionar largura e projeção
+        pt_esq, pt_dir = self._interpolar_ponto_roi(t, p0, p1, p2, p3)
+        v_lat = pt_dir - pt_esq
+        largura_pista_secao = float(np.linalg.norm(v_lat))
+        u_lat = v_lat / (largura_pista_secao + 1e-6)
+
+        escala_profundidade = 0.40 + 0.60 * t
+        larg_fator = 0.32 if v.tipo == "caminhao" else (0.16 if v.tipo == "moto" else 0.24)
+        w_carro = max(14, int(largura_pista_secao * larg_fator * escala_profundidade))
+        hw = u_lat * (w_carro * 0.5)
+
+        # 4 Vértices da base no chão (chassis inferior)
+        b0 = (p_frente - hw).astype(np.int32)
+        b1 = (p_frente + hw).astype(np.int32)
+        b2 = (p_tras + hw).astype(np.int32)
+        b3 = (p_tras - hw).astype(np.int32)
+
+        # Elevação no eixo Z (para cima em Y negativo na perspectiva da imagem)
+        h_fator = 1.1 if v.tipo == "caminhao" else (0.8 if v.tipo == "moto" else 0.65)
+        h_px = max(10, int(w_carro * h_fator))
+        v_up = np.array([0, -h_px], dtype=np.int32)
+
+        # 4 Vértices do teto elevado
+        t0 = b0 + v_up
+        t1 = b1 + v_up
+        t2 = b2 + v_up
+        t3 = b3 + v_up
+
+        # Sombra projetada no asfalto
+        sombra_mask = np.zeros((h_frame, w_frame), dtype=np.uint8)
+        cv2.fillPoly(sombra_mask, [np.array([b0, b1, b2, b3], dtype=np.int32)], 255)
+        indices_sombra = sombra_mask > 0
+        frame[indices_sombra] = (frame[indices_sombra].astype(np.float32) * 0.55).astype(np.uint8)
+
+        # Overlay para renderização translúcida das faces
+        overlay = frame.copy()
+        cor_base = v.cor
+        cor_lat = (int(cor_base[0] * 0.8), int(cor_base[1] * 0.8), int(cor_base[2] * 0.8))
+        cor_teto = (min(255, int(cor_base[0] * 1.25 + 25)), min(255, int(cor_base[1] * 1.25 + 25)), min(255, int(cor_base[2] * 1.25 + 25)))
+        cor_traseira = (int(cor_base[0] * 0.65), int(cor_base[1] * 0.65), int(cor_base[2] * 0.65))
+        cor_neon = (0, 255, 255) if v.faixa == 0 else (255, 255, 0) # Neon Ciano / Amarelo
+
+        # Faces do paralelepípedo
+        cv2.fillPoly(overlay, [np.array([b3, b2, t2, t3], dtype=np.int32)], cor_traseira)
+        cv2.fillPoly(overlay, [np.array([b3, b0, t0, t3], dtype=np.int32)], cor_lat)
+        cv2.fillPoly(overlay, [np.array([b2, b1, t1, t2], dtype=np.int32)], cor_lat)
+        cv2.fillPoly(overlay, [np.array([b0, b1, t1, t0], dtype=np.int32)], cor_base)
+        cv2.fillPoly(overlay, [np.array([t0, t1, t2, t3], dtype=np.int32)], cor_teto)
+
+        # Feixe de luz dos faróis 3D projetado na pista
+        feixe_comp = int(w_carro * 1.4)
+        dir_frente = (p_frente - p_tras)
+        norm_df = float(np.linalg.norm(dir_frente))
+        u_frente = (dir_frente / (norm_df + 1e-6)) if norm_df > 0 else np.array([0.0, 1.0])
+        luz_esq_fim = (b0 + u_frente * feixe_comp - hw * 0.4).astype(np.int32)
+        luz_dir_fim = (b1 + u_frente * feixe_comp + hw * 0.4).astype(np.int32)
+        cone_luz = np.array([b0, luz_esq_fim, luz_dir_fim, b1], dtype=np.int32)
+        cv2.fillPoly(overlay, [cone_luz], (160, 240, 255))
+
+        # Fusão translúcida
+        cv2.addWeighted(overlay, 0.48, frame, 0.52, 0, frame)
+
+        # Contornos de arestas neon (Wireframe 3D)
+        arestas = [
+            (b0, b1), (b1, b2), (b2, b3), (b3, b0),
+            (t0, t1), (t1, t2), (t2, t3), (t3, t0),
+            (b0, t0), (b1, t1), (b2, t2), (b3, t3)
+        ]
+        for p_ini, p_fim in arestas:
+            cv2.line(frame, (int(p_ini[0]), int(p_ini[1])), (int(p_fim[0]), int(p_fim[1])), cor_neon, 2, cv2.LINE_AA)
+
+        # Faróis 3D luminosos na dianteira
+        farol_esq = (int((b0[0] + t0[0]) * 0.5), int((b0[1] + t0[1]) * 0.5))
+        farol_dir = (int((b1[0] + t1[0]) * 0.5), int((b1[1] + t1[1]) * 0.5))
+        cv2.circle(frame, farol_esq, max(3, int(3 * escala_profundidade)), (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(frame, farol_dir, max(3, int(3 * escala_profundidade)), (255, 255, 255), -1, cv2.LINE_AA)
+
+        # Lanternas traseiras na traseira
+        lanterna_esq = (int((b3[0] + t3[0]) * 0.5), int((b3[1] + t3[1]) * 0.5))
+        lanterna_dir = (int((b2[0] + t2[0]) * 0.5), int((b2[1] + t2[1]) * 0.5))
+        cor_lanterna = (0, 0, 255) if v.parado else (0, 60, 200)
+        cv2.circle(frame, lanterna_esq, max(3, int(3 * escala_profundidade)), cor_lanterna, -1, cv2.LINE_AA)
+        cv2.circle(frame, lanterna_dir, max(3, int(3 * escala_profundidade)), cor_lanterna, -1, cv2.LINE_AA)
+
+        # Tag 3D informativa no teto
+        cx_teto = int((t0[0] + t1[0] + t2[0] + t3[0]) * 0.25)
+        cy_teto = int((t0[1] + t1[1] + t2[1] + t3[1]) * 0.25)
+        tag_txt = f"3D {v.tipo[:3].upper()} F{v.faixa}"
+        cv2.putText(frame, tag_txt, (cx_teto - 16, cy_teto - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1, cv2.LINE_AA)

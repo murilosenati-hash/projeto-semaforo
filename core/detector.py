@@ -68,11 +68,25 @@ class DetectorTrafego:
 
     @staticmethod
     def roi_para_pixels(roi, shape):
+        if roi is None or len(roi) == 0:
+            return None
         height, width = shape[:2]
+        # Se roi for lista de polígonos: [[[x, y], ...], [[x, y], ...]]
+        if isinstance(roi[0], (list, tuple)) and len(roi[0]) > 0:
+            if isinstance(roi[0][0], (list, tuple, np.ndarray)):
+                return [
+                    np.array([(int(x * width), int(y * height)) for x, y in poly], dtype=np.int32)
+                    for poly in roi
+                ]
         return np.array([(int(x * width), int(y * height)) for x, y in roi], dtype=np.int32)
 
     @staticmethod
     def ponto_dentro_roi(ponto, poligono_roi):
+        if poligono_roi is None:
+            return True
+        # Suporta múltiplos polígonos (qualquer uma das zonas)
+        if isinstance(poligono_roi, list) and len(poligono_roi) > 0 and isinstance(poligono_roi[0], np.ndarray):
+            return any(cv2.pointPolygonTest(poly, (float(ponto[0]), float(ponto[1])), False) >= 0 for poly in poligono_roi)
         return cv2.pointPolygonTest(poligono_roi, (float(ponto[0]), float(ponto[1])), False) >= 0
 
     def processar_frame(self, frame, roi_normalizada=None, roi_veiculos_normalizada=None, roi_pedestres_normalizada=None):
@@ -176,12 +190,21 @@ class DetectorTrafego:
                 else:
                     cv2.circle(frame, centro, 3, cor, -1)
 
-        # Renderização das duas ROIs se presentes
+        # Renderização das ROIs se presentes
         if roi_poly_veic is not None:
-            cv2.polylines(frame, [roi_poly_veic], True, (0, 215, 255), 2)
+            if isinstance(roi_poly_veic, list):
+                for p_v in roi_poly_veic:
+                    cv2.polylines(frame, [p_v], True, (0, 215, 255), 2)
+            else:
+                cv2.polylines(frame, [roi_poly_veic], True, (0, 215, 255), 2)
+
         if roi_poly_ped is not None:
             cor_borda_ped = (0, 255, 0) if contagem_pessoas > 0 else (255, 255, 0)
-            cv2.polylines(frame, [roi_poly_ped], True, cor_borda_ped, 2)
+            if isinstance(roi_poly_ped, list):
+                for p_p in roi_poly_ped:
+                    cv2.polylines(frame, [p_p], True, cor_borda_ped, 2)
+            else:
+                cv2.polylines(frame, [roi_poly_ped], True, cor_borda_ped, 2)
 
         return {
             "veiculos": contagem_veiculos,
