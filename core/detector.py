@@ -11,13 +11,7 @@ CLASSES_VEICULOS = {
     5: "Onibus",
     7: "Caminhao"
 }
-CLASSES_ANIMAIS = {
-    15: 'gato',
-    16: 'cachorro',
-    17: 'cavalo',
-    18: 'ovelha',
-    19: 'vaca'
-}
+CLASSES_ALVO = [CLASSE_PESSOA] + list(CLASSES_VEICULOS.keys()) + list(CLASSES_ANIMAIS.keys())
 
 
 class DebouncePedestre:
@@ -55,15 +49,16 @@ class DebouncePedestre:
 
 
 class DetectorTrafego:
-    def __init__(self, model_path="yolov8n.pt", confianca=0.35, pular_frames=3, imgsz=320):
+    def __init__(self, model_path="yolov8n.pt", confianca=0.35, pular_frames=3, imgsz=320, usar_ponto_contato: bool = True):
         self.model = YOLO(model_path)
         self.confianca = confianca
         self.pular_frames = pular_frames
         self.imgsz = imgsz
+        self.usar_ponto_contato = usar_ponto_contato
         self.frame_count = 0
         self.ultimo_resultado = None
         # Classes de interesse para filtrar direto no NMS do YOLO
-        self.classes_alvo = [CLASSE_PESSOA] + list(CLASSES_VEICULOS.keys()) + list(CLASSES_ANIMAIS.keys())
+        self.classes_alvo = CLASSES_ALVO
 
     @staticmethod
     def roi_para_pixels(roi, shape):
@@ -131,22 +126,25 @@ class DetectorTrafego:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 centro = ((x1 + x2) // 2, (y1 + y2) // 2)
                 ponto_pes = ((x1 + x2) // 2, y2)
+                ponto_teste = ponto_pes if self.usar_ponto_contato else centro
 
-                # Filtragem espacial por classe e ponto de contato
+                # Filtragem espacial por classe e ponto de teste (solo ou centróide)
                 if cls_id == CLASSE_PESSOA:
-                    # Ponto de contato com o solo (pés)
+                    # Se cls_id == CLASSE_PESSOA: testar contra roi_poly_ped (ou roi_poly_veic como fallback)
                     if roi_poly_ped is not None:
-                        dentro_roi = self.ponto_dentro_roi(ponto_pes, roi_poly_ped)
+                        dentro_roi = self.ponto_dentro_roi(ponto_teste, roi_poly_ped)
                     elif roi_poly_veic is not None:
-                        dentro_roi = self.ponto_dentro_roi(ponto_pes, roi_poly_veic)
+                        dentro_roi = self.ponto_dentro_roi(ponto_teste, roi_poly_veic)
+                    else:
+                        dentro_roi = True
+                elif cls_id in CLASSES_VEICULOS or cls_id in CLASSES_ANIMAIS:
+                    # Se cls_id in CLASSES_VEICULOS ou CLASSES_ANIMAIS: testar ponto_teste contra roi_poly_veic
+                    if roi_poly_veic is not None:
+                        dentro_roi = self.ponto_dentro_roi(ponto_teste, roi_poly_veic)
                     else:
                         dentro_roi = True
                 else:
-                    # Centroide para veículos e animais na pista
-                    if roi_poly_veic is not None:
-                        dentro_roi = self.ponto_dentro_roi(centro, roi_poly_veic)
-                    else:
-                        dentro_roi = True
+                    continue
 
                 if not dentro_roi:
                     continue
@@ -174,6 +172,7 @@ class DetectorTrafego:
                     "bbox": (x1, y1, x2, y2),
                     "centro": centro,
                     "ponto_pes": ponto_pes,
+                    "ponto_teste": ponto_teste,
                     "track_id": track_id
                 })
 
@@ -182,12 +181,10 @@ class DetectorTrafego:
                 rotulo = f"{tipo} #{track_id}" if track_id else tipo
                 cv2.putText(frame, rotulo, (x1, max(y1 - 8, 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, cor, 2)
                 
-                # Marcador de ponto de contato com o solo para pedestres
+                # Marcador do ponto avaliado (solo ou centróide)
+                cv2.circle(frame, ponto_teste, 4, cor, -1)
                 if cls_id == CLASSE_PESSOA:
-                    cv2.circle(frame, ponto_pes, 5, (0, 255, 255), -1)
                     cv2.putText(frame, "[PES]", (ponto_pes[0] - 14, ponto_pes[1] + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
-                else:
-                    cv2.circle(frame, centro, 3, cor, -1)
 
         # Renderização das ROIs se presentes
         if roi_poly_veic is not None:
