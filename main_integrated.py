@@ -299,7 +299,7 @@ def main():
     print(f"[CONFIG] Simulação AR: {'ATIVADA' if ar_ativo else 'DESATIVADA'} | Tecla 'V' para alternar")
     print("Pressione P para simular pedestre na faixa")
     print("Pressione A para simular animal na via")
-    print("Pressione R para calibrar a Região de Interesse (ROI) via 4 vértices")
+    print("Pressione R para calibrar a Região de Interesse (ROI) poligonal livre (N vértices)")
     print("Pressione V para alternar Simulação AR de Carros")
     print("Pressione C para Spawn Imediato de Carro AR")
     print("Pressione X para Limpar Carros AR da Pista")
@@ -380,7 +380,7 @@ def main():
         elif key == ord('r') or key == ord('R'):
             frame_congelado = frame.copy()
             t0 = time.time()
-            nova_roi = selecionar_poligono_4_pontos(nome_janela, frame_congelado, roi_atual=roi)
+            nova_roi = selecionar_poligono_livre(nome_janela, frame_congelado, roi_atual=roi)
             fsm.inicio_estado += (time.time() - t0)
             tempo_anterior = time.time()
             if nova_roi is not None:

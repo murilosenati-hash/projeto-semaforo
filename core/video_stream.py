@@ -7,14 +7,26 @@ class ThreadedVideoStream:
     Leitor de vídeo/webcam desacoplado em Thread dedicada (I/O Decoupling).
     Elimina o gargalo onde a CPU fica esperando o disco ou driver da câmera
     decodificar o frame antes de rodar a inferência.
+    Inclui descarte automático de buffer acumulado para streams de rede (IP Webcam / RTSP).
     """
     def __init__(self, src: int | str = 0):
         self.src = src
         self.cap = cv2.VideoCapture(self.src)
+        
+        # Identifica se a fonte é arquivo local ou stream de rede/câmera ao vivo
+        is_stream = isinstance(src, str) and src.startswith(("http://", "https://", "rtsp://"))
+        self.is_file = isinstance(src, str) and not src.isdigit() and not is_stream
+
+        # Reduz o buffer interno do OpenCV para 1 frame em streams ao vivo para eliminar lag
+        if not self.is_file:
+            try:
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+
         self.grabbed, self.frame = self.cap.read()
         self.stopped = False
         self.lock = threading.Lock()
-        self.is_file = isinstance(src, str) and not src.isdigit()
 
     def start(self):
         self.thread = threading.Thread(target=self.update, daemon=True)
@@ -28,7 +40,7 @@ class ThreadedVideoStream:
             grabbed, frame = self.cap.read()
             if not grabbed:
                 if self.is_file:
-                    # Loop contínuo para apresentação acadêmica
+                    # Loop contínuo para vídeo local em apresentação acadêmica
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     time.sleep(0.01)
                     continue
@@ -38,7 +50,13 @@ class ThreadedVideoStream:
             with self.lock:
                 self.grabbed = grabbed
                 self.frame = frame
-            time.sleep(0.005) # Yield leve para não saturar núcleo ocioso
+            
+            if self.is_file:
+                time.sleep(0.005) # Yield leve para arquivo local não saturar CPU
+            else:
+                # Em streams ao vivo (IP Webcam / RTSP / Webcam), lê continuamente sem delay
+                # para drenar o buffer da rede e evitar atraso/congelamento visual
+                time.sleep(0.001)
 
     def read(self):
         with self.lock:
