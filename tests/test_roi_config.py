@@ -6,7 +6,13 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from main_integrated import carregar_roi, salvar_roi, ROI_PADRAO
+from main_integrated import (
+    carregar_roi,
+    salvar_roi,
+    validar_poligono_4_pontos,
+    normalizar_pontos_roi,
+    ROI_PADRAO
+)
 from core.detector import DetectorTrafego
 
 
@@ -50,9 +56,60 @@ def test_roi_salvar_e_carregar_persistencia():
             os.remove(caminho_tmp)
 
 
+def test_validar_poligono_4_pontos_geometria():
+    """
+    Testa regras geométricas dos 4 Goldfish:
+    1. Polígono válido convexo (trapezoidal / perspectiva)
+    2. Polígono degenerado com área menor que 1000px
+    3. Polígono auto-intersectado (formato de 8 / cruzado / não-convexo)
+    4. Quantidade incorreta de vértices
+    """
+    # 1. Trapézio convexo típico de pista (válido)
+    trapezio_valido = [[200, 150], [600, 150], [750, 450], [50, 450]]
+    valido, msg = validar_poligono_4_pontos(trapezio_valido)
+    assert valido is True
+    assert msg == "OK"
+
+    # 2. Área degenerada (< 1000 px ou colinear)
+    pontos_colineares = [[100, 100], [110, 100], [120, 100], [130, 100]]
+    valido, msg = validar_poligono_4_pontos(pontos_colineares)
+    assert valido is False
+    assert "insuficiente" in msg.lower()
+
+    # 3. Cruzamento em formato de 8 (ampulheta / auto-interseção)
+    # P1(100,100), P2(400,400), P3(400,100), P4(100,400)
+    pontos_cruzados = [[100, 100], [400, 400], [400, 100], [100, 400]]
+    valido, msg = validar_poligono_4_pontos(pontos_cruzados)
+    assert valido is False
+    assert "não-convexo" in msg.lower() or "auto-intersectado" in msg.lower()
+
+    # 4. Quantidade incorreta de pontos
+    valido, msg = validar_poligono_4_pontos([[10, 10], [20, 20]])
+    assert valido is False
+
+
+def test_normalizar_pontos_roi_clamping():
+    """
+    Testa conversão com clamping em [0.0, 1.0] e arredondamento a 4 casas decimais.
+    """
+    pts = [
+        [-50, -20],        # Fora dos limites (negativo) -> clamp para 0.0
+        [1350, 50],        # Fora dos limites (w > 1280) -> clamp para 1.0
+        [640, 360],        # Ponto central exato -> 0.5, 0.5
+        [256, 720]         # 256/1280 = 0.2, 720/720 = 1.0
+    ]
+    fw, fh = 1280, 720
+    norm = normalizar_pontos_roi(pts, fw, fh)
+
+    assert norm[0] == [0.0, 0.0]
+    assert norm[1] == [1.0, 0.0694]
+    assert norm[2] == [0.5, 0.5]
+    assert norm[3] == [0.2, 1.0]
+
+
 def test_roi_compatibilidade_detector_pixels():
     """
-    Valida se a lista de vértices normalizados é perfeitamente compatível
+    Valida se a lista de 4 vértices normalizados é compatível
     com DetectorTrafego.roi_para_pixels e operações do OpenCV.
     """
     roi_normalizada = [
